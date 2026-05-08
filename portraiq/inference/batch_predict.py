@@ -14,7 +14,6 @@ def run_batch_inference(
     output_dir: str,
     config: Dict,
     checkpoint_path: str,
-    detector_mode: str = "auto",
     cpu_optimized: bool = False,
     save_overlay: bool = True,
 ) -> List[Dict]:
@@ -24,7 +23,6 @@ def run_batch_inference(
     engine = InferenceEngine(
         config=config,
         checkpoint_path=checkpoint_path,
-        detector_mode=detector_mode,
         cpu_optimized=cpu_optimized,
     )
 

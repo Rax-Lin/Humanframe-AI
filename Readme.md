@@ -33,15 +33,15 @@ portraiq/
 │
 ├── data/                            # Dataset (fully independent from all code)
 │   ├── raw/                         # Original portrait images, untouched
-│   │   ├── level1_poor/             # Score 0.0–5.0
-│   │   ├── level2_acceptable/       # Score 5.0–7.5
-│   │   ├── level3_good/             # Score 7.5–9.5
-│   │   └── level4_excellent/        # Score 9.5–10.0
-│   ├── processed/                   # Resized & normalized images
-│   │   ├── level1_poor/             # Score 0.0–5.0
-│   │   ├── level2_acceptable/       # Score 5.0–7.5
-│   │   ├── level3_good/             # Score 7.5–9.5
-│   │   └── level4_excellent/        # Score 9.5–10.0
+│   │   ├── level1_poor/             # AVA score < 5.0
+│   │   ├── level2_acceptable/       # AVA score 5.0–7.0
+│   │   ├── level3_good/             # AVA score >= 7.0
+│   │   └── level4_excellent/        # Award-winning set, fixed score 9.5–10.0
+│   ├── processed/                   # Training-ready portrait images (person-filtered)
+│   │   ├── level1_poor/             # AVA score < 5.0
+│   │   ├── level2_acceptable/       # AVA score 5.0–7.0
+│   │   ├── level3_good/             # AVA score >= 7.0
+│   │   └── level4_excellent/        # Award-winning set, fixed score 9.5–10.0
 │   ├── annotations/                 # Per-image score labels in JSON format
 │   └── splits/                      # train / val / test index files
 │
@@ -61,7 +61,7 @@ portraiq/
 ├── inference/                       # ── EXECUTION PIPELINE (standalone) ──
 │   ├── predict.py                   # Single-image scoring entry point
 │   ├── batch_predict.py             # Batch inference over a folder of images
-│   ├── scoring_rules.py             # Rule-based composition scoring (fixed component)
+│   ├── scoring_rules.py             # Legacy reference only (not used in active scoring)
 │   └── visualize.py                 # Overlay score, rule-of-thirds grid, and subject box
 │
 ├── utils/                           # Shared utilities — imported by both pipelines
@@ -141,17 +141,13 @@ Backbone Features → Linear(D, 256) → ReLU → Dropout(0.3) → Linear(256, 1
 Input Image
     │
     ▼
-Person Detection (pose_utils.py)       ← YOLO / MediaPipe
-    │
-    ├──▶ Rule-based Score              ← scoring_rules.py
-    │        Rule of thirds, headroom,
-    │        subject-to-frame ratio
+Person Detection (optional utility)
     │
     └──▶ AI Model Score                ← backbone + scorer
-             Learned positional harmony
+             Learned aesthetic prediction
     │
     ▼
-Final Score = α × rule_score + (1−α) × ai_score
+Final Score = AI_score
     │
     ▼
 Visualize & Output (visualize.py)
@@ -163,16 +159,17 @@ The blending weight `α` is configurable in `config.yaml` and defaults to `0.3`.
 
 ## Dataset Strategy
 
-### Four-Level Source Breakdown
+### Source Scope (Simplified)
 
-| Level | Score Range | Recommended Sources |
-|------|-------------|---------------------|
-| **Level 4 — Excellent** | 9.5–10.0 | Sony World Photography Awards (portrait/winning works), 1x.com curated award-level portraits |
-| **Level 3 — Good** | 7.5–9.5 | AVA high-score subset (≥7.0), Unsplash curated portrait collections |
-| **Level 2 — Acceptable** | 5.0–7.5 | AVA mid-score subset (5.0–7.0) |
-| **Level 1 — Poor** | 0.0–5.0 | AVA low-score subset (≤4.5), AADB Dataset, Photo.net rating archives |
+This project uses only two sources for dataset construction:
 
-All sources above should be objective and multi-human-rated when possible.  
+1. **AVA Dataset** for Level 1 to Level 3:
+   - `level1_poor/` -> AVA score <= 4.5
+   - `level2_acceptable/` -> AVA score 5.0–7.0
+   - `level3_good/` -> AVA score >= 7.0
+2. **Award-winning photography** (1x.com, Sony World Photography Awards) for Level 4 only:
+   - `level4_excellent/` -> manually collected, fixed score 9.5–10.0
+
 Before placing images into `data/raw/level*/` and `data/processed/level*/`, OpenCV/YOLO person detection is used to filter portrait images from each source.
 
 ### Labeling Strategy
@@ -183,6 +180,8 @@ For bootstrapping with limited manual effort:
 2. Train an initial model on this seed set
 3. Run the model on unlabeled images and review high-confidence predictions
 4. Iteratively expand the labeled set (human-in-the-loop)
+
+For `level4_excellent/` labels, use stable fixed values (for example `9.7`, `9.8`, or a manual split such as `9.5` / `10.0`) instead of random assignment.
 
 ### Annotation JSON Format
 
@@ -230,17 +229,70 @@ On managed HPC servers, use Apptainer for training/inference.
 
 GPU training/inference shell:
 ```bash
-cd portraiq
+cd /home/rax10101010/img_project
 apptainer shell --nv \
-  --bind "$PWD":/workspace/portraiq \
+  --bind "$PWD":/workspace/img_project \
   docker://pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime
 ```
 
 Inside that shell:
 ```bash
-cd /workspace/portraiq
+cd /workspace/img_project/portraiq
 python -m pip install --user -r requirements_train.txt
+# Needed for AVA dataset download/prep scripts
+python -m pip install --user datasets pillow tqdm
 python main_train.py --config config.yaml
+```
+
+AVA dataset preparation is now recommended as a two-stage pipeline to reduce CPU spikes and improve stability:
+
+1) Stage A (`download_raw`): download AVA images + score metadata into `data/raw/` and `data/annotations/ava_raw_download.json` (no person filtering).
+2) Stage B (`build_processed`): read raw manifest, run person filtering, copy kept samples to `data/processed/`, and write `data/annotations/ava_from_hf.json`.
+
+Important:
+Run Stage A and Stage B sequentially.
+Do not run them at the same time.
+Wait for Stage A to finish before starting Stage B.
+
+Stage A (download only):
+```bash
+python /workspace/img_project/data_collect/ava_download.py \
+  --mode download_raw \
+  --clean-levels \
+  --clean-annotations \
+  --save-every 200
+```
+
+Stage A finished check:
+```bash
+ls -lh /workspace/img_project/portraiq/data/annotations/ava_raw_download.json
+```
+
+Stage B (raw -> processed with person filtering):
+```bash
+python /workspace/img_project/data_collect/ava_download.py \
+  --mode build_processed \
+  --person-filter \
+  --person-backend torchvision \
+  --person-device cuda:0 \
+  --person-imgsz 384 \
+  --throttle-ms 20 \
+  --clean-levels \
+  --clean-annotations \
+  --save-every 200
+```
+
+If Stage B gets interrupted, resume without cleaning:
+```bash
+python /workspace/img_project/data_collect/ava_download.py \
+  --mode build_processed \
+  --person-filter \
+  --person-backend torchvision \
+  --person-device cuda:0 \
+  --person-imgsz 384 \
+  --throttle-ms 20 \
+  --resume \
+  --save-every 200
 ```
 
 CPU inference shell:
@@ -389,7 +441,6 @@ python main_infer.py \
   --config config_infer_rpi4.yaml \
   --image path/to/photo.jpg \
   --checkpoint models/checkpoints/mobilenet_best.pth \
-  --detector none \
   --cpu_optimized \
   --no_overlay
 ```
@@ -423,9 +474,6 @@ training:
   multi_gpu: true                # Enable DataParallel / DistributedDataParallel
   num_gpus: 8                    # Set to available GPU count (nvidia-smi: 8× V100)
 
-scoring:
-  alpha: 0.3                     # Weight for rule-based score (1-alpha for AI score)
-
 data:
   image_size: 336                # ViT-L/14@336 input; use 224 for standard ViT-L/14
   train_split: 0.8
@@ -448,9 +496,9 @@ gpu:
 - [ ] Dataset collection & annotation pipeline
 - [x] Person detection integration (`pose_utils.py`, YOLO + fallback)
 - [x] Backbone integration (EfficientNet / CLIP)
-- [x] Rule-based scoring implementation (`scoring_rules.py`)
+- [x] Pure AI scoring pipeline (rule-based scoring removed from train/val/infer)
 - [x] Baseline training pipeline with multi-GPU support (`DataParallel`)
-- [x] Baseline evaluation metrics (MAE, RMSE, score-band accuracy)
+- [x] Baseline evaluation metrics (MAE, RMSE)
 - [x] Inference CLI & visualization output
 - [ ] DistributedDataParallel (DDP) training path
 - [ ] Stronger experiment tracking / logging (TensorBoard wiring)

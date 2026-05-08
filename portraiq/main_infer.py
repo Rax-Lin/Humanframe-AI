@@ -17,7 +17,6 @@ def parse_args():
     parser.add_argument("--image", type=str, default=None)
     parser.add_argument("--input_dir", type=str, default=None)
     parser.add_argument("--output_dir", type=str, default="results")
-    parser.add_argument("--detector", type=str, default="auto", choices=["auto", "yolo", "none"])
     parser.add_argument("--cpu_optimized", action="store_true")
     parser.add_argument("--no_overlay", action="store_true")
     return parser.parse_args()
@@ -36,7 +35,6 @@ def main():
         engine = InferenceEngine(
             config=config,
             checkpoint_path=args.checkpoint,
-            detector_mode=args.detector,
             cpu_optimized=args.cpu_optimized,
         )
         pred = engine.predict(args.image)
@@ -55,7 +53,6 @@ def main():
             output_dir=args.output_dir,
             config=config,
             checkpoint_path=args.checkpoint,
-            detector_mode=args.detector,
             cpu_optimized=args.cpu_optimized,
             save_overlay=(not args.no_overlay),
         )

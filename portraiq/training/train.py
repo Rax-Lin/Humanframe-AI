@@ -156,12 +156,11 @@ def run_training(config: Dict, resume: Optional[str] = None) -> Dict[str, float]
         train_loss = running_loss / max(1, len(train_loader))
         val_metrics = evaluate_model(model, val_loader, device)
         logger.info(
-            "Epoch %d | train_loss=%.4f val_mae=%.4f val_rmse=%.4f val_band_acc=%.4f",
+            "Epoch %d | train_loss=%.4f val_mae=%.4f val_rmse=%.4f",
             epoch + 1,
             train_loss,
             val_metrics["mae"],
             val_metrics["rmse"],
-            val_metrics["band_acc"],
         )
 
         _save_checkpoint(checkpoint_dir / "last.pth", model, optimizer, epoch, best_val_mae)

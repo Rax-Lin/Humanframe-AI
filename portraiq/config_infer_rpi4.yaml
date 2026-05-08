@@ -4,9 +4,6 @@ model:
   checkpoint: null
   backbone_lr_scale: 0.1
 
-scoring:
-  alpha: 0.3
-
 data:
   image_size: 224
 

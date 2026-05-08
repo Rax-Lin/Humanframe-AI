@@ -32,9 +32,16 @@ class CompositionDataset(Dataset):
 
 
 def _parse_json_annotation(payload: Dict) -> Dict:
+    if "filename" not in payload or "score" not in payload:
+        raise ValueError("Each annotation must include 'filename' and 'score'.")
+
+    score = float(payload["score"])
+    if score < 0.0 or score > 10.0:
+        raise ValueError("Annotation score must be in [0.0, 10.0].")
+
     return {
         "filename": payload["filename"],
-        "score": float(payload["score"]),
+        "score": score,
         "split": payload.get("split", "unspecified"),
         "image_id": payload.get("image_id", Path(payload["filename"]).stem),
     }

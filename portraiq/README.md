@@ -38,7 +38,6 @@ python main_infer.py \
   --config config_infer_rpi4.yaml \
   --image path/to/photo.jpg \
   --checkpoint models/checkpoints/mobilenet_best.pth \
-  --detector none \
   --cpu_optimized \
   --no_overlay
 ```

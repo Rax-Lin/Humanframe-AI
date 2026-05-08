@@ -15,9 +15,6 @@ training:
   num_gpus: 8
   loss: mse
 
-scoring:
-  alpha: 0.3
-
 data:
   image_size: 224
   train_split: 0.8
