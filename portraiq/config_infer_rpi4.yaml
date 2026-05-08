@@ -1,0 +1,17 @@
+model:
+  backbone: mobilenet_v3
+  pretrained: false
+  checkpoint: null
+  backbone_lr_scale: 0.1
+
+scoring:
+  alpha: 0.3
+
+data:
+  image_size: 224
+
+gpu:
+  device: cpu
+
+inference:
+  cpu_threads: 4

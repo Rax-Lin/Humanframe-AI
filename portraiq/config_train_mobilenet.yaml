@@ -1,0 +1,34 @@
+model:
+  backbone: mobilenet_v3
+  pretrained: true
+  checkpoint: null
+  backbone_lr_scale: 0.1
+
+training:
+  seed: 42
+  epochs: 50
+  batch_size: 256
+  learning_rate: 0.0003
+  weight_decay: 0.00001
+  mixed_precision: true
+  multi_gpu: true
+  num_gpus: 8
+  loss: mse
+
+scoring:
+  alpha: 0.3
+
+data:
+  image_size: 224
+  train_split: 0.8
+  val_split: 0.1
+  test_split: 0.1
+  num_workers: 16
+
+gpu:
+  device: cuda
+  cudnn_benchmark: true
+  visible_devices: "0,1,2,3,4,5,6,7"
+
+inference:
+  cpu_threads: 4

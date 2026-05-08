@@ -2,6 +2,8 @@
 
 A deep learning system that scores the compositional quality of portrait photographs — evaluating how well a person is positioned within a scene, taking into account background elements, spatial harmony, and established photography composition principles.
 
+Implementation in this repo now lives under `portraiq/` and is scaffolded with runnable training/inference entry points.
+
 ---
 
 ## Overview
@@ -52,10 +54,10 @@ portraiq/
 │   ├── predict.py                   # Single-image scoring entry point
 │   ├── batch_predict.py             # Batch inference over a folder of images
 │   ├── scoring_rules.py             # Rule-based composition scoring (fixed component)
-│   └── visualize.py                 # Overlay score & heatmap on output image
+│   └── visualize.py                 # Overlay score, rule-of-thirds grid, and subject box
 │
 ├── utils/                           # Shared utilities — imported by both pipelines
-│   ├── image_utils.py               # Common Pillow / OpenCV / scikit-image helpers
+│   ├── image_utils.py               # Common Pillow / tensor transform helpers
 │   ├── pose_utils.py                # Person detection wrapper (YOLO / MediaPipe)
 │   ├── gpu_config.py                # CUDA device selection & memory management
 │   └── logger.py                    # Training log & experiment tracking
@@ -63,17 +65,26 @@ portraiq/
 ├── main_train.py                    # ▶ TRAINING entry point — runs training pipeline only
 ├── main_infer.py                    # ▶ EXECUTION entry point — scores input images only
 ├── requirements_train.txt           # Dependencies for training (includes tensorboard, etc.)
-├── requirements_infer.txt           # Minimal dependencies for execution only
+├── requirements_infer.txt           # CPU-friendly inference dependencies
+├── requirements_infer_full.txt      # Full inference dependencies (YOLO + CLIP)
+├── requirements_infer_rpi4.txt      # Raspberry Pi helper deps (torch installed separately)
+├── Dockerfile.train_infer           # GPU container for training + inference
+├── Dockerfile.infer_cpu             # CPU-only container for inference (x86_64 / ARM64)
+├── .dockerignore                    # Keeps Docker build context lean
 ├── config.yaml                      # Global project configuration
+├── config_train_mobilenet.yaml      # Training config for Raspberry Pi deployment backbone
+├── config_infer_rpi4.yaml           # Raspberry Pi 4 CPU inference config
 └── README.md
 ```
+
+Repository root also includes `.gitignore` to exclude datasets, checkpoints, cache files, and local runtime outputs from GitHub.
 
 ### Two Independent Entry Points
 
 | Script | Purpose | Requires |
 |--------|---------|---------|
 | `main_train.py` | Train the model, output `.pth` checkpoints | `requirements_train.txt` |
-| `main_infer.py` | Score new portrait images using saved weights | `requirements_infer.txt` (lighter) |
+| `main_infer.py` | Score new portrait images using saved weights | `requirements_infer.txt` (CPU-friendly) |
 
 The **only connection** between the two pipelines is `models/checkpoints/` — the trained `.pth` weight files. The execution environment does not need any training dependencies installed.
 
@@ -114,10 +125,10 @@ The recommended approach is to use a **pretrained CLIP ViT-L/14** visual encoder
 A lightweight regression head attached to the backbone output:
 
 ```
-GlobalAveragePool → Linear(1024, 256) → ReLU → Dropout(0.3) → Linear(256, 1) → Sigmoid × 10
+Backbone Features → Linear(D, 256) → ReLU → Dropout(0.3) → Linear(256, 1) → Sigmoid × 10
 ```
 
-The input dimension is 1024 for CLIP ViT-L/14 (vs. 512 for ViT-B/32 — adjust in `models/configs/` if switching backbones). Output is a single float in [0.0, 10.0].
+`D` depends on backbone (`clip_vit_l14=768`, `clip_vit_b32=512`, `efficientnet_b2=1408`, `mobilenet_v3=960`) and is selected automatically in `models/backbone/factory.py`. Output is a single float in [0.0, 10.0].
 
 ### Scoring Pipeline (Inference)
 
@@ -200,10 +211,90 @@ For bootstrapping with limited manual effort:
 
 Two separate requirements files keep the execution environment lean:
 
+### Docker-First Recommendation
+
+This project now provides two Dockerfiles and Docker is the recommended setup path.
+
+1. `Dockerfile.train_infer` (GPU): training + inference.
+2. `Dockerfile.infer_cpu` (CPU): inference-only for non-NVIDIA environments (including Raspberry Pi 4 64-bit).
+
+Build training/inference image:
+```bash
+cd portraiq
+docker build -f Dockerfile.train_infer -t portraiq:train-infer .
+```
+
+Run training/inference image:
+```bash
+docker run --gpus all --rm -it \
+  -v "$PWD":/workspace/portraiq \
+  -w /workspace/portraiq \
+  portraiq:train-infer bash
+```
+
+Build CPU inference image:
+```bash
+cd portraiq
+docker build -f Dockerfile.infer_cpu -t portraiq:infer-cpu .
+```
+
+Run CPU inference image:
+```bash
+docker run --rm -it \
+  -v "$PWD":/workspace/portraiq \
+  -w /workspace/portraiq \
+  portraiq:infer-cpu bash
+```
+
+Raspberry Pi 4 (64-bit OS) build:
+```bash
+cd portraiq
+docker buildx build --platform linux/arm64 -f Dockerfile.infer_cpu -t portraiq:infer-cpu-arm64 .
+```
+
+If Docker is not available, use manual Python/Conda setup as a fallback.
+
+### No-Sudo Cluster Fallback (Apptainer/Singularity)
+
+On managed HPC servers (like this one) where Docker and sudo are unavailable, use Apptainer.
+
+GPU training/inference shell:
+```bash
+cd portraiq
+apptainer shell --nv \
+  --bind "$PWD":/workspace/portraiq \
+  docker://pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime
+```
+
+Inside that shell:
+```bash
+cd /workspace/portraiq
+python -m pip install --user -r requirements_train.txt
+python main_train.py --config config.yaml
+```
+
+CPU inference shell:
+```bash
+cd portraiq
+apptainer shell \
+  --bind "$PWD":/workspace/portraiq \
+  docker://python:3.10-slim
+```
+
+Inside that shell:
+```bash
+cd /workspace/portraiq
+python -m pip install --user --upgrade pip
+python -m pip install --user torch==2.2.2 torchvision==0.17.2 --index-url https://download.pytorch.org/whl/cpu
+python -m pip install --user -r requirements_infer.txt
+python main_infer.py --config config_infer_rpi4.yaml --image path/to/photo.jpg --checkpoint models/checkpoints/mobilenet_best.pth --detector none --cpu_optimized
+```
+
 **`requirements_train.txt`** — full training environment:
 ```
 torch>=2.2.0
 torchvision>=0.17.0
+numpy>=1.24.0,<2
 opencv-python>=4.9.0
 Pillow>=10.2.0
 scikit-image>=0.22.0
@@ -214,47 +305,83 @@ tqdm>=4.66.0
 tensorboard>=2.16.0       # training only
 ```
 
-**`requirements_infer.txt`** — minimal execution environment:
+**`requirements_infer.txt`** — CPU-friendly execution environment:
 ```
 torch>=2.2.0
 torchvision>=0.17.0
-opencv-python>=4.9.0
+numpy>=1.24.0,<2
 Pillow>=10.2.0
-ultralytics>=8.1.0        # YOLO for person detection
-open-clip-torch>=2.24.0   # CLIP ViT-L/14 backbone
 pyyaml>=6.0
 tqdm>=4.66.0
 ```
 
-Install for training:
-```bash
-pip install -r requirements_train.txt
+**`requirements_infer_full.txt`** — full inference (optional YOLO + CLIP):
+```
+torch>=2.2.0
+torchvision>=0.17.0
+numpy>=1.24.0,<2
+Pillow>=10.2.0
+pyyaml>=6.0
+tqdm>=4.66.0
+ultralytics>=8.1.0
+open-clip-torch>=2.24.0
 ```
 
-Install for execution only:
-```bash
-pip install -r requirements_infer.txt
+**`requirements_infer_rpi4.txt`** — Raspberry Pi helper dependencies:
 ```
+numpy>=1.24.0,<2
+Pillow>=10.2.0
+pyyaml>=6.0
+tqdm>=4.66.0
+```
+
+Manual install snippets are still available in `portraiq/README.md` if needed.
 
 ---
 
 ## Quick Start
 
+The commands below assume you are already inside one of the Docker containers above.
+
 ### ▶ Training Pipeline (`main_train.py`)
+
+Before training, verify dataset visibility and split counts:
+```bash
+cd /workspace/portraiq
+ls -lah data/annotations
+python - << 'PY'
+from training.dataset import load_annotation_records, split_records
+from pathlib import Path
+r = load_annotation_records(Path("data/annotations"))
+tr, va, te = split_records(r, 0.8, 0.1, 0.1, 42)
+print("total:", len(r), "train:", len(tr), "val:", len(va), "test:", len(te))
+PY
+```
+
+Expected: `train > 0`. If `total: 0`, training will fail because no labels were loaded.
 
 Train the model and save checkpoints to `models/checkpoints/`:
 
 ```bash
+cd portraiq
 python main_train.py --config config.yaml
+```
+
+Train a Raspberry Pi-friendly checkpoint (MobileNetV3 backbone):
+```bash
+cd portraiq
+python main_train.py --config config_train_mobilenet.yaml
 ```
 
 Resume from a checkpoint:
 ```bash
+cd portraiq
 python main_train.py --config config.yaml --resume models/checkpoints/last.pth
 ```
 
 Run evaluation on the test set:
 ```bash
+cd portraiq
 python main_train.py --config config.yaml --mode evaluate --checkpoint models/checkpoints/best.pth
 ```
 
@@ -262,13 +389,37 @@ python main_train.py --config config.yaml --mode evaluate --checkpoint models/ch
 
 Score a single portrait image:
 ```bash
+cd portraiq
 python main_infer.py --image path/to/photo.jpg --checkpoint models/checkpoints/best.pth
 ```
 
 Score a folder of images (batch):
 ```bash
+cd portraiq
 python main_infer.py --input_dir ./photos/ --output_dir ./results/ --checkpoint models/checkpoints/best.pth
 ```
+
+Raspberry Pi 4 CPU mode (recommended flags):
+```bash
+cd portraiq
+python main_infer.py \
+  --config config_infer_rpi4.yaml \
+  --image path/to/photo.jpg \
+  --checkpoint models/checkpoints/mobilenet_best.pth \
+  --detector none \
+  --cpu_optimized \
+  --no_overlay
+```
+
+### Training Data Troubleshooting (`total: 0`)
+
+If your check prints `total: 0 train: 0 val: 0 test: 0`, verify:
+
+1. JSON files exist under `data/annotations/` inside the running environment.
+2. You are in the correct working directory (`/workspace/portraiq` in Apptainer shell).
+3. JSON shape matches project format (single object or list of objects, each with `filename` and `score`).
+4. If you use explicit split labels, at least some records must have `"split": "train"`.
+5. Image files referenced by `filename` are placed under `data/processed/`.
 
 ---
 
@@ -310,13 +461,16 @@ gpu:
 ## Roadmap
 
 - [x] Project structure design
+- [x] Initial project scaffold and module implementation (`portraiq/`)
 - [ ] Dataset collection & annotation pipeline
-- [ ] Person detection integration (`pose_utils.py`)
-- [ ] Backbone integration (EfficientNet / CLIP)
-- [ ] Rule-based scoring implementation (`scoring_rules.py`)
-- [ ] Training pipeline with 8× V100 multi-GPU support (DataParallel / DDP)
-- [ ] Evaluation metrics (MAE, RMSE, score-band accuracy)
-- [ ] Inference CLI & visualization output
+- [x] Person detection integration (`pose_utils.py`, YOLO + fallback)
+- [x] Backbone integration (EfficientNet / CLIP)
+- [x] Rule-based scoring implementation (`scoring_rules.py`)
+- [x] Baseline training pipeline with multi-GPU support (`DataParallel`)
+- [x] Baseline evaluation metrics (MAE, RMSE, score-band accuracy)
+- [x] Inference CLI & visualization output
+- [ ] DistributedDataParallel (DDP) training path
+- [ ] Stronger experiment tracking / logging (TensorBoard wiring)
 - [ ] Web demo (optional)
 
 ---
