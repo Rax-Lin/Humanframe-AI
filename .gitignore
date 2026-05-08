@@ -31,10 +31,10 @@ portraiq/models/checkpoints/*
 *.onnx
 
 # Dataset artifacts (keep directory placeholders only)
-portraiq/data/raw/*
-!portraiq/data/raw/.gitkeep
-portraiq/data/processed/*
-!portraiq/data/processed/.gitkeep
+portraiq/data/raw/**/*
+!portraiq/data/raw/**/.gitkeep
+portraiq/data/processed/**/*
+!portraiq/data/processed/**/.gitkeep
 portraiq/data/annotations/*
 !portraiq/data/annotations/.gitkeep
 portraiq/data/splits/*

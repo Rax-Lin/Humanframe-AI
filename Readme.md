@@ -33,7 +33,15 @@ portraiq/
 │
 ├── data/                            # Dataset (fully independent from all code)
 │   ├── raw/                         # Original portrait images, untouched
-│   ├── processed/                   # Resized & normalized images (Pillow / OpenCV pipeline)
+│   │   ├── level1_poor/             # Score 0.0–5.0
+│   │   ├── level2_acceptable/       # Score 5.0–7.5
+│   │   ├── level3_good/             # Score 7.5–9.5
+│   │   └── level4_excellent/        # Score 9.5–10.0
+│   ├── processed/                   # Resized & normalized images
+│   │   ├── level1_poor/             # Score 0.0–5.0
+│   │   ├── level2_acceptable/       # Score 5.0–7.5
+│   │   ├── level3_good/             # Score 7.5–9.5
+│   │   └── level4_excellent/        # Score 9.5–10.0
 │   ├── annotations/                 # Per-image score labels in JSON format
 │   └── splits/                      # train / val / test index files
 │
@@ -68,9 +76,6 @@ portraiq/
 ├── requirements_infer.txt           # CPU-friendly inference dependencies
 ├── requirements_infer_full.txt      # Full inference dependencies (YOLO + CLIP)
 ├── requirements_infer_rpi4.txt      # Raspberry Pi helper deps (torch installed separately)
-├── Dockerfile.train_infer           # GPU container for training + inference
-├── Dockerfile.infer_cpu             # CPU-only container for inference (x86_64 / ARM64)
-├── .dockerignore                    # Keeps Docker build context lean
 ├── config.yaml                      # Global project configuration
 ├── config_train_mobilenet.yaml      # Training config for Raspberry Pi deployment backbone
 ├── config_infer_rpi4.yaml           # Raspberry Pi 4 CPU inference config
@@ -158,14 +163,17 @@ The blending weight `α` is configurable in `config.yaml` and defaults to `0.3`.
 
 ## Dataset Strategy
 
-### Recommended Sources
+### Four-Level Source Breakdown
 
-| Source | Type | Usage |
-|--------|------|-------|
-| **AVA Dataset** (Google Research) | 250k images with aesthetic scores | Primary training data — filter for portrait images |
-| **Unsplash Lite** | Professional photography | High-score positive samples |
-| **OpenImages v7** | Everyday snapshots | Low/mid-score reference samples |
-| **CUHK Person Re-ID / Market-1501** | Person-in-scene images | Diverse positional variety for training |
+| Level | Score Range | Recommended Sources |
+|------|-------------|---------------------|
+| **Level 4 — Excellent** | 9.5–10.0 | Sony World Photography Awards (portrait/winning works), 1x.com curated award-level portraits |
+| **Level 3 — Good** | 7.5–9.5 | AVA high-score subset (≥7.0), Unsplash curated portrait collections |
+| **Level 2 — Acceptable** | 5.0–7.5 | AVA mid-score subset (5.0–7.0) |
+| **Level 1 — Poor** | 0.0–5.0 | AVA low-score subset (≤4.5), AADB Dataset, Photo.net rating archives |
+
+All sources above should be objective and multi-human-rated when possible.  
+Before placing images into `data/raw/level*/` and `data/processed/level*/`, OpenCV/YOLO person detection is used to filter portrait images from each source.
 
 ### Labeling Strategy
 
@@ -211,52 +219,14 @@ For bootstrapping with limited manual effort:
 
 Two separate requirements files keep the execution environment lean:
 
-### Docker-First Recommendation
+### Deployment Targets
 
-This project now provides two Dockerfiles and Docker is the recommended setup path.
+1. **V100 workstation (Training + Inference):** Apptainer/Singularity is the only container method available (no sudo, Docker unavailable).
+2. **Raspberry Pi 4 (Inference only):** direct pip install with `requirements_infer_rpi4.txt` (no container needed).
 
-1. `Dockerfile.train_infer` (GPU): training + inference.
-2. `Dockerfile.infer_cpu` (CPU): inference-only for non-NVIDIA environments (including Raspberry Pi 4 64-bit).
+### Apptainer/Singularity (Primary, No Sudo Required)
 
-Build training/inference image:
-```bash
-cd portraiq
-docker build -f Dockerfile.train_infer -t portraiq:train-infer .
-```
-
-Run training/inference image:
-```bash
-docker run --gpus all --rm -it \
-  -v "$PWD":/workspace/portraiq \
-  -w /workspace/portraiq \
-  portraiq:train-infer bash
-```
-
-Build CPU inference image:
-```bash
-cd portraiq
-docker build -f Dockerfile.infer_cpu -t portraiq:infer-cpu .
-```
-
-Run CPU inference image:
-```bash
-docker run --rm -it \
-  -v "$PWD":/workspace/portraiq \
-  -w /workspace/portraiq \
-  portraiq:infer-cpu bash
-```
-
-Raspberry Pi 4 (64-bit OS) build:
-```bash
-cd portraiq
-docker buildx build --platform linux/arm64 -f Dockerfile.infer_cpu -t portraiq:infer-cpu-arm64 .
-```
-
-If Docker is not available, use manual Python/Conda setup as a fallback.
-
-### No-Sudo Cluster Fallback (Apptainer/Singularity)
-
-On managed HPC servers (like this one) where Docker and sudo are unavailable, use Apptainer.
+On managed HPC servers, use Apptainer for training/inference.
 
 GPU training/inference shell:
 ```bash
@@ -287,7 +257,6 @@ cd /workspace/portraiq
 python -m pip install --user --upgrade pip
 python -m pip install --user torch==2.2.2 torchvision==0.17.2 --index-url https://download.pytorch.org/whl/cpu
 python -m pip install --user -r requirements_infer.txt
-python main_infer.py --config config_infer_rpi4.yaml --image path/to/photo.jpg --checkpoint models/checkpoints/mobilenet_best.pth --detector none --cpu_optimized
 ```
 
 **`requirements_train.txt`** — full training environment:
@@ -341,7 +310,7 @@ Manual install snippets are still available in `portraiq/README.md` if needed.
 
 ## Quick Start
 
-The commands below assume you are already inside one of the Docker containers above.
+Training commands below assume you are inside the Apptainer shell.
 
 ### ▶ Training Pipeline (`main_train.py`)
 
@@ -363,45 +332,59 @@ Expected: `train > 0`. If `total: 0`, training will fail because no labels were 
 Train the model and save checkpoints to `models/checkpoints/`:
 
 ```bash
-cd portraiq
+cd /workspace/portraiq
 python main_train.py --config config.yaml
 ```
 
 Train a Raspberry Pi-friendly checkpoint (MobileNetV3 backbone):
 ```bash
-cd portraiq
+cd /workspace/portraiq
 python main_train.py --config config_train_mobilenet.yaml
 ```
 
 Resume from a checkpoint:
 ```bash
-cd portraiq
+cd /workspace/portraiq
 python main_train.py --config config.yaml --resume models/checkpoints/last.pth
 ```
 
 Run evaluation on the test set:
 ```bash
-cd portraiq
+cd /workspace/portraiq
 python main_train.py --config config.yaml --mode evaluate --checkpoint models/checkpoints/best.pth
+```
+
+### TensorBoard Monitoring
+
+Launch TensorBoard on the workstation:
+```bash
+cd /workspace/portraiq
+tensorboard --logdir=runs/ --host=0.0.0.0 --port=6006
+```
+
+Open in your local browser:
+```text
+http://<workstation-ip>:6006
 ```
 
 ### ▶ Execution Pipeline (`main_infer.py`)
 
-Score a single portrait image:
+V100 workstation (inside Apptainer shell) single-image inference:
 ```bash
-cd portraiq
+cd /workspace/portraiq
 python main_infer.py --image path/to/photo.jpg --checkpoint models/checkpoints/best.pth
 ```
 
-Score a folder of images (batch):
+V100 workstation (inside Apptainer shell) batch inference:
 ```bash
-cd portraiq
+cd /workspace/portraiq
 python main_infer.py --input_dir ./photos/ --output_dir ./results/ --checkpoint models/checkpoints/best.pth
 ```
 
-Raspberry Pi 4 CPU mode (recommended flags):
+Raspberry Pi 4 CPU mode (pip-based, no container):
 ```bash
-cd portraiq
+cd /home/pi/portraiq
+python -m pip install -r requirements_infer_rpi4.txt
 python main_infer.py \
   --config config_infer_rpi4.yaml \
   --image path/to/photo.jpg \
