@@ -43,7 +43,7 @@ portraiq/
 │   │   ├── level2_acceptable/       # AVA score 5.0–7.0
 │   │   ├── level3_good/             # AVA score >= 7.0
 │   │   └── level4_excellent/        # Pexels + Unsplash portraits for excellent class
-│   ├── annotations/                 # Per-image score labels (includes unified level4_excellent.json)
+│   ├── annotations/                 # Per-image score labels (includes level3_ffhq.json, level4_excellent.json, level4_smugmug.json)
 │   └── splits/                      # train / val / test index files
 │
 ├── models/                          # Model definitions & weights (shared by both pipelines)
@@ -57,7 +57,7 @@ portraiq/
 │   ├── train.py                     # Main training script (multi-GPU accelerated)
 │   ├── evaluate.py                  # Validation & test set evaluation
 │   ├── augment.py                   # Data augmentation pipeline
-│   └── losses.py                    # Loss function definitions (MSE / smooth L1)
+│   └── losses.py                    # Loss functions (Smooth L1 + optional variance penalty)
 │
 ├── inference/                       # ── EXECUTION PIPELINE (standalone) ──
 │   ├── predict.py                   # Single-image scoring entry point
@@ -131,7 +131,7 @@ The recommended approach is to use a **pretrained CLIP visual encoder** as the b
 A lightweight regression head attached to the backbone output:
 
 ```
-Backbone Features → Linear(D, 256) → ReLU → Dropout(0.3) → Linear(256, 1) → Sigmoid × 10
+Backbone Features → Linear(D, 256) → ReLU → Dropout(0.3) → Linear(256, 1) → Clamp(0, 10)
 ```
 
 `D` depends on backbone (`clip_vit_l14=768`, `clip_vit_b32=512`, `efficientnet_b2=1408`, `mobilenet_v3=960`) and is selected automatically in `models/backbone/factory.py`. Output is a single float in [0.0, 10.0].
@@ -147,8 +147,10 @@ Current training uses:
   Effective batch size = `batch_size × gradient_accumulation_steps` (for example, `8 × 4 = 32`).
 - **Weighted sampling** across `level1_poor`, `level2_acceptable`, `level3_good`, and `level4_excellent` to reduce class-imbalance bias from AVA-heavy levels.
 - **Smooth L1 (Huber) loss** for stronger robustness to noisy/outlier score labels.
+- **Variance penalty regularization** (`variance_penalty: 0.1`) to discourage collapsed predictions around the mean.
 - **CosineAnnealingLR** schedule from initial LR down to `1e-6` across total epochs.
-- **Early stopping** on validation MAE (`early_stopping_patience: 7`).
+- **Early stopping** on validation MAE (`early_stopping_patience: 7`), with countdown paused during Phase 1 and active from Phase 2 onward.
+- **Validation prediction-distribution logging** per epoch (`pred_score_min/mean/max/std`) to monitor range compression.
 
 ### Scoring Pipeline (Inference)
 
@@ -172,20 +174,29 @@ Visualize & Output (visualize.py)
 
 ## Dataset Strategy
 
+Update: Level-4 training photos now also include SmugMug-collected portraits (high-quality editorial/public portfolio style) after YOLO person filtering.
+
 ### Source Scope (Simplified)
 
-This project uses three sources for dataset construction:
+This project uses five sources for dataset construction:
 
 1. **AVA Dataset** for Level 1 to Level 3:
    - `level1_poor/` -> AVA score <= 4.5
    - `level2_acceptable/` -> AVA score 5.0–7.0
    - `level3_good/` -> AVA score >= 7.0
-2. **Pexels API** for Level 4:
+2. **FFHQ Dataset (Hugging Face)** for Level 3:
+   - downloaded from `datasets/ffhq` via `huggingface_hub`
+   - saved under `data/raw/level3_good/ffhq/`, then person-filtered into `data/processed/level3_good/`
+   - fixed score `8.0` (`annotator: ffhq_fixed`) because FFHQ portraits are generally high-quality but not necessarily award-winning aesthetics
+   - source images are typically `1024x1024` PNG and are resized by the existing training preprocessing pipeline
+3. **Pexels API** for Level 4:
    - `level4_excellent/` -> Pexels portrait queries + person filtering, fixed score 9.5
-3. **Unsplash API** for Level 4:
+4. **Unsplash API** for Level 4:
    - portrait queries + person filtering, fixed score 9.5
    - only images with `width >= 800` and `height >= 800` are considered before download
-
+5. **SmugMug ImageSearch API** for Level 4:
+   - portrait keyword queries + person filtering, fixed score 9.5
+   - requires `SMUGMUG_API_KEY` in environment
 AVA is used as the primary source because it provides large-scale human aesthetic preference ratings that directly align with this project’s aesthetic quality objective.
 
 For AVA samples, vote-distribution agreement filtering is applied:
@@ -195,6 +206,15 @@ For AVA samples, vote-distribution agreement filtering is applied:
 - Discard when `score_std >= 1.5` (high annotator disagreement).
 
 The computed `score_std` is stored in annotation records alongside `score`.
+
+### Expected Dataset Size After Filtering (Guideline)
+
+| Level | Primary Sources | Typical Scale After Person Filtering |
+|-------|------------------|--------------------------------------|
+| Level 1 (Poor) | AVA | depends on AVA split/filter |
+| Level 2 (Acceptable) | AVA | depends on AVA split/filter |
+| Level 3 (Good) | AVA + FFHQ | AVA Level-3 + approximately **50,000–70,000** additional FFHQ portraits |
+| Level 4 (Excellent) | Pexels + Unsplash + SmugMug | typically adds approximately **3,000–5,000** SmugMug portraits after YOLO filtering, plus other Level-4 sources |
 
 ### Labeling Strategy
 
@@ -206,6 +226,38 @@ For bootstrapping with limited manual effort:
 4. Iteratively expand the labeled set (human-in-the-loop)
 
 For `level4_excellent/` labels, use a stable fixed value (`9.5`) instead of random assignment.
+
+For FFHQ Level-3 labels, use a stable fixed value (`8.0`) to represent consistently strong portrait quality without forcing them into the top-most excellent tier.
+
+### Level 3 Collection (FFHQ)
+
+Run in project root:
+```bash
+cd ~/emb_project/Humanframe-AI
+source .venv/bin/activate
+```
+
+Foreground run:
+```bash
+python3 data_collect/ffhq_download.py \
+  --max_images 70000 \
+  --person_conf 0.25 \
+  --resume
+```
+
+Optional explicit repo selection:
+```bash
+python3 data_collect/ffhq_download.py \
+  --repo_id marcosv/ffhq-dataset \
+  --max_images 70000 \
+  --person_conf 0.25 \
+  --resume
+```
+
+This writes:
+- Raw images: `portraiq/data/raw/level3_good/ffhq/`
+- Processed images: `portraiq/data/processed/level3_good/`
+- Annotations: `portraiq/data/annotations/level3_ffhq.json`
 
 ### Level 4 Collection (Unified: Pexels + Unsplash)
 
@@ -257,6 +309,30 @@ This writes:
 - Raw images: `portraiq/data/raw/level4_excellent/`
 - Processed images: `portraiq/data/processed/level4_excellent/`
 - Annotations: `portraiq/data/annotations/level4_excellent.json`
+
+### Level 4 Collection (SmugMug)
+
+Set API key:
+```bash
+export SMUGMUG_API_KEY="your_key_here"
+```
+
+Foreground run:
+```bash
+python3 data_collect/smugmug_download.py \
+  --max_images 5000 \
+  --per_keyword 1500 \
+  --scope /api/v2/user/cmac \
+  --discover_scopes \
+  --max_scopes 50 \
+  --person_conf 0.25 \
+  --resume
+```
+
+This writes:
+- Raw images: `portraiq/data/raw/level4_excellent/`
+- Processed images: `portraiq/data/processed/level4_excellent/`
+- Annotations: `portraiq/data/annotations/level4_smugmug.json`
 
 ### Annotation JSON Format
 
@@ -381,53 +457,24 @@ python3 data_collect/ava_download.py \
   --save-every 200
 ```
 
-**`requirements_train.txt`** — full training environment:
-```
-torch>=2.2.0
-torchvision>=0.17.0
-numpy>=1.24.0,<2
-opencv-python>=4.9.0
-Pillow>=10.2.0
-scikit-image>=0.22.0
-ultralytics>=8.1.0        # YOLO for person detection
-open-clip-torch>=2.24.0   # CLIP ViT-L/14 backbone
-pyyaml>=6.0
-tqdm>=4.66.0
-tensorboard>=2.16.0       # training only
-requests>=2.31.0          # Pexels API for Level 4 collection
-```
+Install the dependency set based on your target:
 
-**`requirements_infer.txt`** — CPU-friendly execution environment:
+- Training environment:
+```bash
+python -m pip install -r portraiq/requirements_train.txt
 ```
-torch>=2.2.0
-torchvision>=0.17.0
-numpy>=1.24.0,<2
-Pillow>=10.2.0
-pyyaml>=6.0
-tqdm>=4.66.0
+- CPU-friendly inference:
+```bash
+python -m pip install -r portraiq/requirements_infer.txt
 ```
-
-**`requirements_infer_full.txt`** — full inference (optional YOLO + CLIP):
+- Full inference (YOLO + CLIP):
+```bash
+python -m pip install -r portraiq/requirements_infer_full.txt
 ```
-torch>=2.2.0
-torchvision>=0.17.0
-numpy>=1.24.0,<2
-Pillow>=10.2.0
-pyyaml>=6.0
-tqdm>=4.66.0
-ultralytics>=8.1.0
-open-clip-torch>=2.24.0
+- Raspberry Pi helper dependencies:
+```bash
+python -m pip install -r portraiq/requirements_infer_rpi4.txt
 ```
-
-**`requirements_infer_rpi4.txt`** — Raspberry Pi helper dependencies:
-```
-numpy>=1.24.0,<2
-Pillow>=10.2.0
-pyyaml>=6.0
-tqdm>=4.66.0
-```
-
-Manual install snippets are still available in `portraiq/README.md` if needed.
 
 ---
 
@@ -534,44 +581,15 @@ If your check prints `total: 0 train: 0 val: 0 test: 0`, verify:
 
 ---
 
-## Configuration (`config.yaml`)
+## Configuration Files
 
-```yaml
-model:
-  backbone: clip_vit_l14         # Options: efficientnet_b2 | mobilenet_v3 | clip_vit_b32 | clip_vit_l14
-  checkpoint: null               # Path to pretrained weights, null = train from scratch
-  backbone_lr_scale: 0.1         # Fine-tune backbone with 10× lower LR than head
+Use the provided config files directly instead of copying settings from README:
 
-training:
-  epochs: 50
-  freeze_epochs: 10              # Phase 1 freeze, then Phase 2 unfreeze
-  batch_size: 8                  # Per-step micro-batch on RTX 4070 SUPER
-  gradient_accumulation_steps: 4 # Effective batch = 8 × 4 = 32
-  learning_rate: 1.0e-4
-  weight_decay: 1.0e-5
-  lr_scheduler: cosine
-  lr_min: 1.0e-6
-  loss: smooth_l1
-  mixed_precision: true          # torch.cuda.amp — RTX 40 series supports FP16 well
-  multi_gpu: false               # Single-GPU workstation
-  num_gpus: 1                    # Current environment GPU count
-  early_stopping_patience: 7
+- `portraiq/config.yaml` (default training/inference on workstation)
+- `portraiq/config_train_mobilenet.yaml` (MobileNet training profile)
+- `portraiq/config_infer_rpi4.yaml` (Raspberry Pi inference profile)
 
-data:
-  image_size: 224
-  train_split: 0.8
-  val_split: 0.1
-  test_split: 0.1
-  score_std_max: 1.5
-  label_smoothing_alpha: 0.1
-  weighted_sampling: true
-  num_workers: 8
-
-gpu:
-  device: cuda                   # cuda | cpu
-  cudnn_benchmark: true
-  visible_devices: "0"           # RTX 4070 SUPER
-```
+If you need custom hyperparameters, duplicate one of the YAML files and pass it with `--config`.
 
 ---
 
@@ -587,7 +605,7 @@ gpu:
 - [x] Baseline evaluation metrics (MAE, RMSE)
 - [x] Inference CLI & visualization output
 - [x] Stronger experiment tracking / logging (TensorBoard wiring)
-- [ ] Collect additional high-quality portrait dataset beyond Pexels Level 4 to improve Excellent-range accuracy
+- [ ] Collect additional high-quality portrait dataset beyond current Level 4 sources (Pexels + Unsplash) to improve Excellent-range accuracy
 - [ ] Web demo (optional)
 
 ---

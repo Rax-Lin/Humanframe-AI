@@ -157,7 +157,10 @@ def run_training(config: Dict, resume: Optional[str] = None) -> Dict[str, float]
     device, model = _prepare_model_and_device(config)
     train_loader, val_loader, test_loader = _build_dataloaders(config)
 
-    criterion = build_loss(config["training"].get("loss", "smooth_l1"))
+    criterion = build_loss(
+        config["training"].get("loss", "smooth_l1"),
+        variance_penalty=float(config["training"].get("variance_penalty", 0.0)),
+    )
     optimizer = _build_optimizer(model, config)
     scheduler = _build_scheduler(optimizer, config)
     scaler = create_grad_scaler(config, device)
@@ -258,6 +261,14 @@ def run_training(config: Dict, resume: Optional[str] = None) -> Dict[str, float]
             val_metrics["rmse"],
             current_lrs[1] if len(current_lrs) > 1 else current_lrs[0],
             current_lrs[0],
+        )
+        logger.info(
+            "Epoch %d | pred_score_min=%.4f pred_score_mean=%.4f pred_score_max=%.4f pred_score_std=%.4f",
+            epoch + 1,
+            float(val_metrics.get("pred_min", 0.0)),
+            float(val_metrics.get("pred_mean", 0.0)),
+            float(val_metrics.get("pred_max", 0.0)),
+            float(val_metrics.get("pred_std", 0.0)),
         )
 
         _save_checkpoint(

@@ -19,6 +19,7 @@ miniconda.sh
 
 # Runtime outputs
 portraiq/results/
+portraiq/photos/
 portraiq/logs/
 portraiq/runs/
 portraiq/tb_logs/

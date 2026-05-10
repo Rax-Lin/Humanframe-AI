@@ -19,6 +19,7 @@ training:
   num_gpus: 1
   early_stopping_patience: 7
   loss: smooth_l1
+  variance_penalty: 0.1
 
 data:
   image_size: 224

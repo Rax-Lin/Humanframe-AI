@@ -16,5 +16,5 @@ class RegressionHead(nn.Module):
         )
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
-        raw = self.layers(features)
-        return torch.sigmoid(raw).squeeze(-1) * 10.0
+        raw = self.layers(features).squeeze(-1)
+        return torch.clamp(raw, 0.0, 10.0)
