@@ -67,14 +67,10 @@ def _horizontal_balance_score(box: Box, image_size: Tuple[int, int]) -> float:
 
 def compute_rule_based_score(bbox: Dict[str, float], image_size: Tuple[int, int]) -> Dict[str, float]:
     box = Box(**bbox)
-    sub_scores = {
-        "rule_of_thirds": _rule_of_thirds_score(box, image_size),
-        "headroom": _headroom_score(box, image_size),
-        "subject_frame_ratio": _subject_ratio_score(box, image_size),
-        "horizontal_balance": _horizontal_balance_score(box, image_size),
-    }
-    total = sum(sub_scores.values()) / len(sub_scores)
-    return {
-        "score": round(_clamp10(total), 4),
-        "sub_scores": {k: round(v, 4) for k, v in sub_scores.items()},
-    }
+    score = (
+        _rule_of_thirds_score(box, image_size)
+        + _headroom_score(box, image_size)
+        + _subject_ratio_score(box, image_size)
+        + _horizontal_balance_score(box, image_size)
+    ) / 4.0
+    return {"score": round(_clamp10(score), 4)}

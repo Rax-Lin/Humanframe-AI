@@ -13,7 +13,7 @@ def evaluate_model(model, dataloader, device) -> Dict[str, float]:
     with torch.no_grad():
         for batch in dataloader:
             images = batch["image"].to(device, non_blocking=True)
-            scores = batch["score"].to(device, non_blocking=True)
+            scores = batch["score"].to(device=device, dtype=torch.float32, non_blocking=True)
             outputs = model(images)
             preds.extend(outputs.detach().cpu().tolist())
             targets.extend(scores.detach().cpu().tolist())

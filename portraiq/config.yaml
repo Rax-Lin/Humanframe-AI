@@ -7,25 +7,33 @@ model:
 training:
   seed: 42
   epochs: 50
-  batch_size: 256
-  learning_rate: 0.0003
+  freeze_epochs: 10
+  batch_size: 8
+  gradient_accumulation_steps: 4
+  learning_rate: 0.0001
   weight_decay: 0.00001
+  lr_scheduler: cosine
+  lr_min: 1.0e-6
   mixed_precision: true
-  multi_gpu: true
-  num_gpus: 8
-  loss: mse
+  multi_gpu: false
+  num_gpus: 1
+  early_stopping_patience: 7
+  loss: smooth_l1
 
 data:
-  image_size: 336
+  image_size: 224
   train_split: 0.8
   val_split: 0.1
   test_split: 0.1
-  num_workers: 16
+  score_std_max: 1.5
+  label_smoothing_alpha: 0.1
+  weighted_sampling: true
+  num_workers: 8
 
 gpu:
   device: cuda
   cudnn_benchmark: true
-  visible_devices: "0,1,2,3,4,5,6,7"
+  visible_devices: "0"
 
 inference:
   cpu_threads: 4

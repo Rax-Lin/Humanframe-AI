@@ -45,7 +45,12 @@ class OpenCLIPBackbone(nn.Module):
         self.clip_model = clip_model
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.clip_model.encode_image(x)
+        # open_clip.create_model_and_transforms(...).visual returns a visual tower
+        # (e.g. VisionTransformer) which is callable but does not expose
+        # encode_image(). Full CLIP models do expose encode_image().
+        if hasattr(self.clip_model, "encode_image"):
+            return self.clip_model.encode_image(x)
+        return self.clip_model(x)
 
 
 def _create_torchvision_backbone(name: str, pretrained: bool) -> Tuple[nn.Module, int]:

@@ -22,6 +22,8 @@ portraiq/results/
 portraiq/logs/
 portraiq/runs/
 portraiq/tb_logs/
+logs/*
+!logs/.gitkeep
 
 # Model artifacts
 portraiq/models/checkpoints/*

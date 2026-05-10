@@ -12,10 +12,11 @@ Legacy one-shot mode is available via --prepare-training in download_raw mode.
 import argparse
 import hashlib
 import json
+import math
 import shutil
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 def parse_args():
@@ -80,6 +81,21 @@ def parse_args():
         type=float,
         default=7.0,
         help="Scores >= threshold go to level3_good",
+    )
+    parser.add_argument(
+        "--score-std-max",
+        type=float,
+        default=1.5,
+        help="Discard samples with score_std >= this threshold.",
+    )
+    parser.add_argument(
+        "--label-smoothing-alpha",
+        type=float,
+        default=0.1,
+        help=(
+            "For ambiguous samples (1.0 <= score_std < score_std_max), smooth score as "
+            "raw_score*(1-alpha)+5.0*alpha."
+        ),
     )
 
     parser.add_argument("--train-ratio", type=float, default=0.8)
@@ -173,6 +189,85 @@ def level_from_score(score: float, poor_threshold: float, good_threshold: float)
     if score >= good_threshold:
         return "level3_good"
     return "level2_acceptable"
+
+
+def _extract_vote_distribution(row: Dict[str, Any]) -> Optional[List[float]]:
+    list_keys = (
+        "score_distribution",
+        "vote_distribution",
+        "votes",
+        "ratings",
+        "histogram",
+    )
+    for key in list_keys:
+        val = row.get(key)
+        if isinstance(val, (list, tuple)) and len(val) == 10:
+            try:
+                return [float(x) for x in val]
+            except (TypeError, ValueError):
+                continue
+
+    patterns = (
+        "vote_{}",
+        "votes_{}",
+        "score_{}",
+        "rating_{}",
+        "vote{}",
+        "votes{}",
+        "score{}",
+        "rating{}",
+    )
+    votes: List[float] = []
+    found_any = False
+    for i in range(1, 11):
+        current = None
+        for pattern in patterns:
+            key = pattern.format(i)
+            if key in row:
+                current = row[key]
+                found_any = True
+                break
+        if current is None:
+            votes = []
+            break
+        try:
+            votes.append(float(current))
+        except (TypeError, ValueError):
+            votes = []
+            break
+    if found_any and len(votes) == 10:
+        return votes
+
+    return None
+
+
+def _compute_score_std(votes: Optional[List[float]]) -> Optional[float]:
+    if votes is None or len(votes) != 10:
+        return None
+    total_votes = float(sum(votes))
+    if total_votes <= 0.0:
+        return None
+
+    scores = [float(i) for i in range(1, 11)]
+    mean = sum(s * v for s, v in zip(scores, votes)) / total_votes
+    var = sum(v * ((s - mean) ** 2) for s, v in zip(scores, votes)) / total_votes
+    return math.sqrt(max(0.0, var))
+
+
+def _apply_score_std_policy(
+    raw_score: float,
+    score_std: Optional[float],
+    score_std_max: float,
+    label_smoothing_alpha: float,
+) -> Optional[float]:
+    if score_std is None:
+        return raw_score
+    if score_std >= score_std_max:
+        return None
+    if 1.0 <= score_std < score_std_max:
+        alpha = min(max(float(label_smoothing_alpha), 0.0), 1.0)
+        return (raw_score * (1.0 - alpha)) + (5.0 * alpha)
+    return raw_score
 
 
 def deterministic_split(image_id: str, train_ratio: float, val_ratio: float, test_ratio: float) -> str:
@@ -387,6 +482,7 @@ def run_download_raw(args, data_root: Path, annotations_dir: Path):
     raw_records: List[Dict] = []
     skipped_records: List[Dict] = []
     done_ids = set()
+    skipped_high_std = 0
 
     if args.resume:
         raw_records = load_json_list(raw_manifest_path)
@@ -405,7 +501,31 @@ def run_download_raw(args, data_root: Path, annotations_dir: Path):
             continue
 
         try:
-            score = float(row["mean_score"])
+            votes = _extract_vote_distribution(row)
+            score_std = _compute_score_std(votes)
+            raw_score = float(row["mean_score"])
+            filtered_score = _apply_score_std_policy(
+                raw_score=raw_score,
+                score_std=score_std,
+                score_std_max=float(args.score_std_max),
+                label_smoothing_alpha=float(args.label_smoothing_alpha),
+            )
+
+            if filtered_score is None:
+                skipped_high_std += 1
+                skipped_records.append(
+                    {
+                        "stage": "download_raw",
+                        "index": idx,
+                        "image_id": str(row.get("image_id", "")),
+                        "reason": "high_score_std",
+                        "score_std": round(float(score_std), 4) if score_std is not None else None,
+                        "score_std_max": float(args.score_std_max),
+                    }
+                )
+                continue
+
+            score = float(filtered_score)
             level = level_from_score(score, args.poor_threshold, args.good_threshold)
             image_id = str(row["image_id"])
             if image_id in done_ids:
@@ -424,6 +544,8 @@ def run_download_raw(args, data_root: Path, annotations_dir: Path):
                     "image_id": image_id,
                     "filename": str(rel).replace("\\", "/"),
                     "score": round(score, 4),
+                    "raw_score": round(raw_score, 4),
+                    "score_std": round(float(score_std), 4) if score_std is not None else None,
                     "split": split,
                     "source": "AVA",
                     "level": level,
@@ -444,6 +566,7 @@ def run_download_raw(args, data_root: Path, annotations_dir: Path):
     print("Saved raw images:", len(raw_records))
     print("Raw manifest:", raw_manifest_path)
     print("Download skipped/corrupted:", len(skipped_records))
+    print("Skipped (high score_std):", skipped_high_std)
     print("Skipped log:", skipped_path)
 
 
@@ -502,6 +625,7 @@ def run_build_processed(args, data_root: Path, annotations_dir: Path):
         print(f"Resume: loaded {len(train_records)} processed records.")
 
     skipped_non_person = 0
+    skipped_high_std = 0
 
     for idx, rec in enumerate(tqdm(raw_records, desc="Filtering raw -> processed")):
         image_id = str(rec.get("image_id", ""))
@@ -509,6 +633,30 @@ def run_build_processed(args, data_root: Path, annotations_dir: Path):
             continue
 
         try:
+            raw_score = float(rec.get("raw_score", rec["score"]))
+            score_std = rec.get("score_std")
+            score_std = float(score_std) if score_std is not None else None
+            final_score = _apply_score_std_policy(
+                raw_score=raw_score,
+                score_std=score_std,
+                score_std_max=float(args.score_std_max),
+                label_smoothing_alpha=float(args.label_smoothing_alpha),
+            )
+            if final_score is None:
+                skipped_high_std += 1
+                skipped_records.append(
+                    {
+                        "stage": "build_processed",
+                        "index": idx,
+                        "image_id": image_id,
+                        "filename": rec.get("filename", ""),
+                        "reason": "high_score_std",
+                        "score_std": round(float(score_std), 4) if score_std is not None else None,
+                        "score_std_max": float(args.score_std_max),
+                    }
+                )
+                continue
+
             rel = rec["filename"]
             raw_path = raw_root / rel
             if not raw_path.exists():
@@ -549,7 +697,9 @@ def run_build_processed(args, data_root: Path, annotations_dir: Path):
                 {
                     "image_id": image_id,
                     "filename": rel,
-                    "score": float(rec["score"]),
+                    "score": float(final_score),
+                    "raw_score": raw_score,
+                    "score_std": round(float(score_std), 4) if score_std is not None else None,
                     "split": rec.get("split", "train"),
                 }
             )
@@ -579,6 +729,7 @@ def run_build_processed(args, data_root: Path, annotations_dir: Path):
     print("Training annotations:", train_ann_path)
     print("Skipped/corrupted samples:", len(skipped_records))
     print("Skipped (no person detected):", skipped_non_person)
+    print("Skipped (high score_std):", skipped_high_std)
     print("Skipped log:", skipped_path)
 
 

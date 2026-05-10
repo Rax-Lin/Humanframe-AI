@@ -1,6 +1,6 @@
 # Composition Assistant
 
-A deep learning system that scores the compositional quality of portrait photographs — evaluating how well a person is positioned within a scene, taking into account background elements, spatial harmony, and established photography composition principles.
+A deep learning system that scores the overall aesthetic quality of portrait photographs — evaluating lighting, tone, composition, and visual harmony.
 
 Implementation in this repo now lives under `portraiq/` and is scaffolded with runnable training/inference entry points.
 
@@ -8,12 +8,11 @@ Implementation in this repo now lives under `portraiq/` and is scaffolded with r
 
 ## Overview
 
-Casual photographers often struggle to capture well-composed portrait shots without formal training in framing, background selection, and subject placement. This project addresses that gap by training a model to evaluate *person-in-scene* positioning quality and output a continuous score from **0.0 to 10.0**.
+Casual photographers often struggle to consistently produce visually strong portraits without formal training or curated feedback. This project addresses that gap by training a model to estimate overall portrait aesthetic quality and output a continuous score from **0.0 to 10.0**.
 
 The scoring system combines two complementary sources:
 
-- **Rule-based fixed score** — derived from classical composition theory (rule of thirds, subject-to-background ratio, headroom/lead room)
-- **AI-learned score** — trained from a large corpus of professional and amateur portrait images, learning positional harmony between the subject and background
+- **AI-learned score** — trained from a large corpus of portrait images with human preference signals, learning broad aesthetic patterns
 
 **Score scale:**
 
@@ -23,6 +22,8 @@ The scoring system combines two complementary sources:
 | 5.0 – 7.5 | Acceptable |
 | 7.5 – 9.5 | Good |
 | 9.5 – 10.0 | Excellent |
+
+These four levels represent overall aesthetic quality tiers rather than position-only composition quality.
 
 ---
 
@@ -36,13 +37,13 @@ portraiq/
 │   │   ├── level1_poor/             # AVA score < 5.0
 │   │   ├── level2_acceptable/       # AVA score 5.0–7.0
 │   │   ├── level3_good/             # AVA score >= 7.0
-│   │   └── level4_excellent/        # Award-winning set, fixed score 9.5–10.0
+│   │   └── level4_excellent/        # Pexels + Unsplash portraits for excellent class
 │   ├── processed/                   # Training-ready portrait images (person-filtered)
 │   │   ├── level1_poor/             # AVA score < 5.0
 │   │   ├── level2_acceptable/       # AVA score 5.0–7.0
 │   │   ├── level3_good/             # AVA score >= 7.0
-│   │   └── level4_excellent/        # Award-winning set, fixed score 9.5–10.0
-│   ├── annotations/                 # Per-image score labels in JSON format
+│   │   └── level4_excellent/        # Pexels + Unsplash portraits for excellent class
+│   ├── annotations/                 # Per-image score labels (includes unified level4_excellent.json)
 │   └── splits/                      # train / val / test index files
 │
 ├── models/                          # Model definitions & weights (shared by both pipelines)
@@ -61,8 +62,8 @@ portraiq/
 ├── inference/                       # ── EXECUTION PIPELINE (standalone) ──
 │   ├── predict.py                   # Single-image scoring entry point
 │   ├── batch_predict.py             # Batch inference over a folder of images
-│   ├── scoring_rules.py             # Legacy reference only (not used in active scoring)
-│   └── visualize.py                 # Overlay score, rule-of-thirds grid, and subject box
+│   ├── scoring_rules.py             # Removed — not applicable to aesthetic scoring model
+│   └── visualize.py                 # Overlay score and prediction outputs
 │
 ├── utils/                           # Shared utilities — imported by both pipelines
 │   ├── image_utils.py               # Common Pillow / tensor transform helpers
@@ -107,7 +108,7 @@ The `data/` directory is self-contained. Labels are stored as JSON in `annotatio
 
 ### GPU acceleration
 
-All CUDA configuration is centralized in `utils/gpu_config.py`. The workstation runs **8× Tesla V100-SXM2 (32 GB VRAM each, 256 GB total)** with CUDA 12.2. GPU memory allocation, mixed-precision training (`torch.cuda.amp`), multi-GPU data parallelism (`torch.nn.DataParallel` or `DistributedDataParallel`), and device fallback to CPU are all handled in one place. With this setup, large backbone models (ViT-L/14, CLIP ViT-L) and high batch sizes (256+) become feasible.
+All CUDA configuration is centralized in `utils/gpu_config.py`. The current workstation runs **1× NVIDIA GeForce RTX 4070 SUPER (12 GB VRAM)** with CUDA 12.9 (driver 575.64). GPU memory allocation, mixed-precision training (`torch.cuda.amp`), optional data parallelism, and device fallback to CPU are all handled in one place. With this setup, CLIP backbones are practical with moderate batch sizes and input resolutions.
 
 ---
 
@@ -120,10 +121,10 @@ All CUDA configuration is centralized in `utils/gpu_config.py`. The workstation 
 | EfficientNet-B2 | ~9M | < 2 GB | Lightweight baseline; useful for rapid iteration |
 | MobileNetV3-Large | ~5M | < 1 GB | Fastest inference; suitable for real-time use |
 | CLIP ViT-B/32 | ~86M | ~4 GB | Strong compositional semantics; good accuracy/speed balance |
-| **CLIP ViT-L/14** | **~307M** | **~10 GB** | **Recommended — best accuracy; fully feasible on V100 32GB** |
-| CLIP ViT-L/14@336 | ~307M | ~14 GB | Higher resolution input; marginal gain over ViT-L/14 |
+| **CLIP ViT-L/14** | **~307M** | **~10 GB** | **Best accuracy; feasible on RTX 4070 SUPER with reduced batch size** |
+| CLIP ViT-L/14@336 | ~307M | ~14 GB | Higher resolution input; usually requires very small batches on 12 GB GPUs |
 
-The recommended approach is to use a **pretrained CLIP ViT-L/14** visual encoder as the backbone. This is a significant upgrade over ViT-B/32 and is only practical with high-VRAM GPUs — the 8× V100 (32 GB each) makes it straightforward. ViT-L/14 produces richer spatial feature representations that better capture composition-relevant details such as subject placement relative to background geometry. Only the scoring head is trained from scratch; the backbone is fine-tuned with a low learning rate.
+The recommended approach is to use a **pretrained CLIP visual encoder** as the backbone. On the current RTX 4070 SUPER setup, start with ViT-B/32 for faster iteration and move to ViT-L/14 for final accuracy (with smaller batches or gradient accumulation). ViT-L/14 produces richer spatial feature representations that better capture global portrait aesthetics. Only the scoring head is trained from scratch; the backbone is fine-tuned with a low learning rate.
 
 ### Scoring Head — Regression
 
@@ -134,6 +135,20 @@ Backbone Features → Linear(D, 256) → ReLU → Dropout(0.3) → Linear(256, 1
 ```
 
 `D` depends on backbone (`clip_vit_l14=768`, `clip_vit_b32=512`, `efficientnet_b2=1408`, `mobilenet_v3=960`) and is selected automatically in `models/backbone/factory.py`. Output is a single float in [0.0, 10.0].
+
+### Training Strategy
+
+Current training uses:
+
+- **Two-phase freeze/unfreeze training**:  
+  Phase 1 (`epoch 1..freeze_epochs`) freezes backbone parameters and trains only the scoring head.  
+  Phase 2 (`freeze_epochs+1..end`) unfreezes the backbone and continues fine-tuning with `backbone_lr_scale`.
+- **Gradient accumulation** (`gradient_accumulation_steps: 4`) to simulate larger effective batch size without exceeding VRAM limits.  
+  Effective batch size = `batch_size × gradient_accumulation_steps` (for example, `8 × 4 = 32`).
+- **Weighted sampling** across `level1_poor`, `level2_acceptable`, `level3_good`, and `level4_excellent` to reduce class-imbalance bias from AVA-heavy levels.
+- **Smooth L1 (Huber) loss** for stronger robustness to noisy/outlier score labels.
+- **CosineAnnealingLR** schedule from initial LR down to `1e-6` across total epochs.
+- **Early stopping** on validation MAE (`early_stopping_patience: 7`).
 
 ### Scoring Pipeline (Inference)
 
@@ -153,24 +168,33 @@ Final Score = AI_score
 Visualize & Output (visualize.py)
 ```
 
-The blending weight `α` is configurable in `config.yaml` and defaults to `0.3`.
-
 ---
 
 ## Dataset Strategy
 
 ### Source Scope (Simplified)
 
-This project uses only two sources for dataset construction:
+This project uses three sources for dataset construction:
 
 1. **AVA Dataset** for Level 1 to Level 3:
    - `level1_poor/` -> AVA score <= 4.5
    - `level2_acceptable/` -> AVA score 5.0–7.0
    - `level3_good/` -> AVA score >= 7.0
-2. **Award-winning photography** (1x.com, Sony World Photography Awards) for Level 4 only:
-   - `level4_excellent/` -> manually collected, fixed score 9.5–10.0
+2. **Pexels API** for Level 4:
+   - `level4_excellent/` -> Pexels portrait queries + person filtering, fixed score 9.5
+3. **Unsplash API** for Level 4:
+   - portrait queries + person filtering, fixed score 9.5
+   - only images with `width >= 800` and `height >= 800` are considered before download
 
-Before placing images into `data/raw/level*/` and `data/processed/level*/`, OpenCV/YOLO person detection is used to filter portrait images from each source.
+AVA is used as the primary source because it provides large-scale human aesthetic preference ratings that directly align with this project’s aesthetic quality objective.
+
+For AVA samples, vote-distribution agreement filtering is applied:
+- Keep as-is when `score_std < 1.0` (high annotator consensus).
+- Keep with smoothing when `1.0 <= score_std < 1.5`:  
+  `smoothed_score = raw_score * 0.9 + 5.0 * 0.1`
+- Discard when `score_std >= 1.5` (high annotator disagreement).
+
+The computed `score_std` is stored in annotation records alongside `score`.
 
 ### Labeling Strategy
 
@@ -181,23 +205,69 @@ For bootstrapping with limited manual effort:
 3. Run the model on unlabeled images and review high-confidence predictions
 4. Iteratively expand the labeled set (human-in-the-loop)
 
-For `level4_excellent/` labels, use stable fixed values (for example `9.7`, `9.8`, or a manual split such as `9.5` / `10.0`) instead of random assignment.
+For `level4_excellent/` labels, use a stable fixed value (`9.5`) instead of random assignment.
+
+### Level 4 Collection (Unified: Pexels + Unsplash)
+
+Run in project root:
+```bash
+cd ~/emb_project/Humanframe-AI
+source .venv/bin/activate
+```
+
+Set API keys in environment:
+```bash
+export PEXELS_API_KEY="<your_pexels_api_key>"
+export UNSPLASH_ACCESS_KEY="<your_unsplash_access_key>"
+```
+Use `--source all` only when both keys are set.
+
+Foreground runs:
+```bash
+# Download from both sources
+python3 data_collect/level4_download.py --source all --max_images 5000 --resume
+
+# Download from Pexels only
+python3 data_collect/level4_download.py --source pexels --max_images 5000 --resume
+
+# Download from Unsplash only
+python3 data_collect/level4_download.py --source unsplash --max_images 1000 --resume
+```
+
+Background run (recommended for long jobs):
+```bash
+mkdir -p logs
+nohup python3 data_collect/level4_download.py \
+  --source all \
+  --max_images 5000 \
+  --per_keyword 2000 \
+  --person_conf 0.25 \
+  --resume \
+  > logs/level4_download.log 2>&1 &
+echo $! > logs/level4_download.pid
+```
+
+Monitor / stop:
+```bash
+tail -f logs/level4_download.log
+kill "$(cat logs/level4_download.pid)"
+```
+
+This writes:
+- Raw images: `portraiq/data/raw/level4_excellent/`
+- Processed images: `portraiq/data/processed/level4_excellent/`
+- Annotations: `portraiq/data/annotations/level4_excellent.json`
 
 ### Annotation JSON Format
 
 ```json
 {
   "image_id": "img_0042",
-  "filename": "portrait_042.jpg",
+  "filename": "level2_acceptable/portrait_042.jpg",
   "category": "portrait",
-  "score": 7.4,
-  "sub_scores": {
-    "rule_of_thirds": 8.0,
-    "headroom": 7.5,
-    "background_complexity": 6.8,
-    "subject_frame_ratio": 7.2
-  },
-  "annotator": "human",
+  "score": 6.3,
+  "score_std": 0.82,
+  "annotator": "ava",
   "split": "train"
 }
 ```
@@ -208,10 +278,10 @@ For `level4_excellent/` labels, use stable fixed values (for example `9.7`, `9.8
 
 ### Hardware
 
-- **GPU:** 8× NVIDIA Tesla V100-SXM2 (32 GB VRAM each) — 256 GB total VRAM
-- **CUDA:** 12.2
-- **Driver:** 535.161.08
-- **Multi-GPU:** `DataParallel` for single-node multi-GPU training; `DistributedDataParallel` recommended for large-scale runs
+- **GPU:** 1× NVIDIA GeForce RTX 4070 SUPER (12 GB VRAM)
+- **CUDA:** 12.9
+- **Driver:** 575.64
+- **Multi-GPU:** single-GPU by default; keep `multi_gpu: false` unless hardware changes
 - **RAM:** 32 GB minimum recommended (64 GB+ for large dataset caching)
 
 ### Dependencies
@@ -220,28 +290,44 @@ Two separate requirements files keep the execution environment lean:
 
 ### Deployment Targets
 
-1. **V100 workstation (Training + Inference):** Apptainer/Singularity is the only container method available (no sudo, Docker unavailable).
+1. **RTX 4070 SUPER workstation (Training + Inference):** current development target for training and inference.
 2. **Raspberry Pi 4 (Inference only):** direct pip install with `requirements_infer_rpi4.txt` (no container needed).
 
-### Apptainer/Singularity (Primary, No Sudo Required)
+### Local RTX 4070 Workflow (Recommended)
 
-On managed HPC servers, use Apptainer for training/inference.
-
-GPU training/inference shell:
+Project root:
 ```bash
-cd /home/rax10101010/img_project
-apptainer shell --nv \
-  --bind "$PWD":/workspace/img_project \
-  docker://pytorch/pytorch:2.2.2-cuda12.1-cudnn8-runtime
+cd ~/emb_project/Humanframe-AI
 ```
 
-Inside that shell:
+Create and activate a virtual environment:
 ```bash
-cd /workspace/img_project/portraiq
-python -m pip install --user -r requirements_train.txt
-# Needed for AVA dataset download/prep scripts
-python -m pip install --user datasets pillow tqdm
-python main_train.py --config config.yaml
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+```
+
+Install training dependencies (CUDA-enabled PyTorch, compatible versions):
+```bash
+python -m pip install --no-cache-dir numpy==1.26.4
+python -m pip install --no-cache-dir \
+  torch==2.2.2+cu121 torchvision==0.17.2+cu121 torchaudio==2.2.2+cu121 \
+  --index-url https://download.pytorch.org/whl/cu121
+python -m pip install --no-cache-dir opencv-python==4.10.0.84
+python -m pip install -r portraiq/requirements_train.txt
+python -m pip install datasets
+```
+
+Verify CUDA is available:
+```bash
+python - << 'PY'
+import torch
+print("torch:", torch.__version__)
+print("cuda available:", torch.cuda.is_available())
+print("device count:", torch.cuda.device_count())
+if torch.cuda.is_available():
+    print("device 0:", torch.cuda.get_device_name(0))
+PY
 ```
 
 AVA dataset preparation is now recommended as a two-stage pipeline to reduce CPU spikes and improve stability:
@@ -256,7 +342,7 @@ Wait for Stage A to finish before starting Stage B.
 
 Stage A (download only):
 ```bash
-python /workspace/img_project/data_collect/ava_download.py \
+python3 data_collect/ava_download.py \
   --mode download_raw \
   --clean-levels \
   --clean-annotations \
@@ -265,12 +351,12 @@ python /workspace/img_project/data_collect/ava_download.py \
 
 Stage A finished check:
 ```bash
-ls -lh /workspace/img_project/portraiq/data/annotations/ava_raw_download.json
+ls -lh portraiq/data/annotations/ava_raw_download.json
 ```
 
 Stage B (raw -> processed with person filtering):
 ```bash
-python /workspace/img_project/data_collect/ava_download.py \
+python3 data_collect/ava_download.py \
   --mode build_processed \
   --person-filter \
   --person-backend torchvision \
@@ -284,7 +370,7 @@ python /workspace/img_project/data_collect/ava_download.py \
 
 If Stage B gets interrupted, resume without cleaning:
 ```bash
-python /workspace/img_project/data_collect/ava_download.py \
+python3 data_collect/ava_download.py \
   --mode build_processed \
   --person-filter \
   --person-backend torchvision \
@@ -293,22 +379,6 @@ python /workspace/img_project/data_collect/ava_download.py \
   --throttle-ms 20 \
   --resume \
   --save-every 200
-```
-
-CPU inference shell:
-```bash
-cd portraiq
-apptainer shell \
-  --bind "$PWD":/workspace/portraiq \
-  docker://python:3.10-slim
-```
-
-Inside that shell:
-```bash
-cd /workspace/portraiq
-python -m pip install --user --upgrade pip
-python -m pip install --user torch==2.2.2 torchvision==0.17.2 --index-url https://download.pytorch.org/whl/cpu
-python -m pip install --user -r requirements_infer.txt
 ```
 
 **`requirements_train.txt`** — full training environment:
@@ -324,6 +394,7 @@ open-clip-torch>=2.24.0   # CLIP ViT-L/14 backbone
 pyyaml>=6.0
 tqdm>=4.66.0
 tensorboard>=2.16.0       # training only
+requests>=2.31.0          # Pexels API for Level 4 collection
 ```
 
 **`requirements_infer.txt`** — CPU-friendly execution environment:
@@ -362,13 +433,14 @@ Manual install snippets are still available in `portraiq/README.md` if needed.
 
 ## Quick Start
 
-Training commands below assume you are inside the Apptainer shell.
+Training commands below assume local workstation execution with `.venv` activated.
 
 ### ▶ Training Pipeline (`main_train.py`)
 
 Before training, verify dataset visibility and split counts:
 ```bash
-cd /workspace/portraiq
+cd ~/emb_project/Humanframe-AI/portraiq
+source ../.venv/bin/activate
 ls -lah data/annotations
 python - << 'PY'
 from training.dataset import load_annotation_records, split_records
@@ -380,29 +452,34 @@ PY
 ```
 
 Expected: `train > 0`. If `total: 0`, training will fail because no labels were loaded.
+Current loader behavior: non-training JSON files like `ava_raw_download.json` and `ava_skipped_errors.json` are skipped automatically.
 
 Train the model and save checkpoints to `models/checkpoints/`:
 
 ```bash
-cd /workspace/portraiq
+cd ~/emb_project/Humanframe-AI/portraiq
+source ../.venv/bin/activate
 python main_train.py --config config.yaml
 ```
 
 Train a Raspberry Pi-friendly checkpoint (MobileNetV3 backbone):
 ```bash
-cd /workspace/portraiq
+cd ~/emb_project/Humanframe-AI/portraiq
+source ../.venv/bin/activate
 python main_train.py --config config_train_mobilenet.yaml
 ```
 
 Resume from a checkpoint:
 ```bash
-cd /workspace/portraiq
+cd ~/emb_project/Humanframe-AI/portraiq
+source ../.venv/bin/activate
 python main_train.py --config config.yaml --resume models/checkpoints/last.pth
 ```
 
 Run evaluation on the test set:
 ```bash
-cd /workspace/portraiq
+cd ~/emb_project/Humanframe-AI/portraiq
+source ../.venv/bin/activate
 python main_train.py --config config.yaml --mode evaluate --checkpoint models/checkpoints/best.pth
 ```
 
@@ -410,7 +487,7 @@ python main_train.py --config config.yaml --mode evaluate --checkpoint models/ch
 
 Launch TensorBoard on the workstation:
 ```bash
-cd /workspace/portraiq
+cd ~/emb_project/Humanframe-AI/portraiq
 tensorboard --logdir=runs/ --host=0.0.0.0 --port=6006
 ```
 
@@ -421,16 +498,16 @@ http://<workstation-ip>:6006
 
 ### ▶ Execution Pipeline (`main_infer.py`)
 
-V100 workstation (inside Apptainer shell) single-image inference:
+RTX 4070 SUPER workstation (single-image inference):
 ```bash
-cd /workspace/portraiq
-python main_infer.py --image path/to/photo.jpg --checkpoint models/checkpoints/best.pth
+cd ~/emb_project/Humanframe-AI/portraiq
+python3 main_infer.py --image path/to/photo.jpg --checkpoint models/checkpoints/best.pth
 ```
 
-V100 workstation (inside Apptainer shell) batch inference:
+RTX 4070 SUPER workstation (batch inference):
 ```bash
-cd /workspace/portraiq
-python main_infer.py --input_dir ./photos/ --output_dir ./results/ --checkpoint models/checkpoints/best.pth
+cd ~/emb_project/Humanframe-AI/portraiq
+python3 main_infer.py --input_dir ./photos/ --output_dir ./results/ --checkpoint models/checkpoints/best.pth
 ```
 
 Raspberry Pi 4 CPU mode (pip-based, no container):
@@ -450,7 +527,7 @@ python main_infer.py \
 If your check prints `total: 0 train: 0 val: 0 test: 0`, verify:
 
 1. JSON files exist under `data/annotations/` inside the running environment.
-2. You are in the correct working directory (`/workspace/portraiq` in Apptainer shell).
+2. You are in the correct working directory (`~/emb_project/Humanframe-AI/portraiq` for local runs).
 3. JSON shape matches project format (single object or list of objects, each with `filename` and `score`).
 4. If you use explicit split labels, at least some records must have `"split": "train"`.
 5. Image files referenced by `filename` are placed under `data/processed/`.
@@ -467,24 +544,33 @@ model:
 
 training:
   epochs: 50
-  batch_size: 256                # 8× V100 allows large batches; 32 per GPU × 8 GPUs
-  learning_rate: 3.0e-4          # Scale with batch size vs. baseline 1e-4 at bs=32
+  freeze_epochs: 10              # Phase 1 freeze, then Phase 2 unfreeze
+  batch_size: 8                  # Per-step micro-batch on RTX 4070 SUPER
+  gradient_accumulation_steps: 4 # Effective batch = 8 × 4 = 32
+  learning_rate: 1.0e-4
   weight_decay: 1.0e-5
-  mixed_precision: true          # torch.cuda.amp — V100 supports FP16 natively
-  multi_gpu: true                # Enable DataParallel / DistributedDataParallel
-  num_gpus: 8                    # Set to available GPU count (nvidia-smi: 8× V100)
+  lr_scheduler: cosine
+  lr_min: 1.0e-6
+  loss: smooth_l1
+  mixed_precision: true          # torch.cuda.amp — RTX 40 series supports FP16 well
+  multi_gpu: false               # Single-GPU workstation
+  num_gpus: 1                    # Current environment GPU count
+  early_stopping_patience: 7
 
 data:
-  image_size: 336                # ViT-L/14@336 input; use 224 for standard ViT-L/14
+  image_size: 224
   train_split: 0.8
   val_split: 0.1
   test_split: 0.1
-  num_workers: 16                # More workers to feed 8 GPUs without bottleneck
+  score_std_max: 1.5
+  label_smoothing_alpha: 0.1
+  weighted_sampling: true
+  num_workers: 8
 
 gpu:
   device: cuda                   # cuda | cpu
   cudnn_benchmark: true
-  visible_devices: "0,1,2,3,4,5,6,7"   # All 8 V100s
+  visible_devices: "0"           # RTX 4070 SUPER
 ```
 
 ---
@@ -500,8 +586,8 @@ gpu:
 - [x] Baseline training pipeline with multi-GPU support (`DataParallel`)
 - [x] Baseline evaluation metrics (MAE, RMSE)
 - [x] Inference CLI & visualization output
-- [ ] DistributedDataParallel (DDP) training path
-- [ ] Stronger experiment tracking / logging (TensorBoard wiring)
+- [x] Stronger experiment tracking / logging (TensorBoard wiring)
+- [ ] Collect additional high-quality portrait dataset beyond Pexels Level 4 to improve Excellent-range accuracy
 - [ ] Web demo (optional)
 
 ---

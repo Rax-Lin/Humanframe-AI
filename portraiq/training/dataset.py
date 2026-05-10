@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, List, Sequence
 
 from PIL import Image
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, WeightedRandomSampler
 
 
 class CompositionDataset(Dataset):
@@ -42,22 +42,82 @@ def _parse_json_annotation(payload: Dict) -> Dict:
     return {
         "filename": payload["filename"],
         "score": score,
+        "raw_score": float(payload.get("raw_score", score)),
+        "score_std": float(payload["score_std"]) if payload.get("score_std") is not None else None,
         "split": payload.get("split", "unspecified"),
         "image_id": payload.get("image_id", Path(payload["filename"]).stem),
     }
 
 
-def load_annotation_records(annotation_dir: Path) -> List[Dict]:
+def _apply_score_std_policy(
+    record: Dict,
+    score_std_max: float | None = None,
+    label_smoothing_alpha: float = 0.0,
+) -> Dict | None:
+    if score_std_max is None:
+        return record
+
+    score_std = record.get("score_std")
+    if score_std is None:
+        return record
+
+    if float(score_std) >= float(score_std_max):
+        return None
+
+    if 1.0 <= float(score_std) < float(score_std_max):
+        alpha = min(max(float(label_smoothing_alpha), 0.0), 1.0)
+        raw_score = float(record.get("raw_score", record["score"]))
+        record["score"] = (raw_score * (1.0 - alpha)) + (5.0 * alpha)
+
+    return record
+
+
+def load_annotation_records(
+    annotation_dir: Path,
+    score_std_max: float | None = None,
+    label_smoothing_alpha: float = 0.0,
+) -> List[Dict]:
     annotation_dir = Path(annotation_dir)
     records: List[Dict] = []
     for path in sorted(annotation_dir.glob("*.json")):
+        # Skip pipeline bookkeeping files that are not training labels.
+        name = path.name.lower()
+        if "skipped" in name or "raw_download" in name:
+            continue
+
         with path.open("r", encoding="utf-8") as f:
             payload = json.load(f)
 
         if isinstance(payload, list):
-            records.extend(_parse_json_annotation(item) for item in payload)
+            for item in payload:
+                # Raw-manifest records should not be used for model training.
+                if isinstance(item, dict) and item.get("storage") == "raw":
+                    continue
+                try:
+                    parsed = _parse_json_annotation(item)
+                    parsed = _apply_score_std_policy(
+                        parsed,
+                        score_std_max=score_std_max,
+                        label_smoothing_alpha=label_smoothing_alpha,
+                    )
+                    if parsed is not None:
+                        records.append(parsed)
+                except ValueError:
+                    continue
         else:
-            records.append(_parse_json_annotation(payload))
+            if isinstance(payload, dict) and payload.get("storage") == "raw":
+                continue
+            try:
+                parsed = _parse_json_annotation(payload)
+                parsed = _apply_score_std_policy(
+                    parsed,
+                    score_std_max=score_std_max,
+                    label_smoothing_alpha=label_smoothing_alpha,
+                )
+                if parsed is not None:
+                    records.append(parsed)
+            except ValueError:
+                continue
 
     return records
 
@@ -93,3 +153,28 @@ def split_records(
     val = shuffled[n_train : n_train + n_val]
     test = shuffled[n_train + n_val :]
     return train, val, test
+
+
+def _quality_level_from_filename(filename: str) -> str:
+    first = str(filename).split("/", 1)[0]
+    if first in {"level1_poor", "level2_acceptable", "level3_good", "level4_excellent"}:
+        return first
+    return "other"
+
+
+def build_weighted_sampler(records: Sequence[Dict]) -> WeightedRandomSampler:
+    if not records:
+        raise ValueError("Cannot build weighted sampler with empty records.")
+
+    level_counts: Dict[str, int] = {}
+    for rec in records:
+        level = _quality_level_from_filename(rec.get("filename", ""))
+        level_counts[level] = level_counts.get(level, 0) + 1
+
+    weights: List[float] = []
+    for rec in records:
+        level = _quality_level_from_filename(rec.get("filename", ""))
+        count = max(1, level_counts.get(level, 1))
+        weights.append(1.0 / float(count))
+
+    return WeightedRandomSampler(weights=weights, num_samples=len(records), replacement=True)
