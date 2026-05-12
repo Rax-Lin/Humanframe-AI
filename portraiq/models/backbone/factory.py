@@ -15,7 +15,9 @@ CLIP_IMAGE_STD = (0.26862954, 0.26130258, 0.27577711)
 
 BACKBONE_DIMS = {
     "efficientnet_b2": 1408,
+    "efficientnet_b4": 1792,
     "mobilenet_v3": 960,
+    "mobilenet_v3_large": 960,
     "clip_vit_b32": 512,
     "clip_vit_l14": 768,
 }
@@ -28,11 +30,11 @@ class TorchvisionBackbone(nn.Module):
         self.kind = kind
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.kind == "efficientnet_b2":
+        if self.kind in {"efficientnet_b2", "efficientnet_b4"}:
             x = self.model.features(x)
             x = self.model.avgpool(x)
             return torch.flatten(x, 1)
-        if self.kind == "mobilenet_v3":
+        if self.kind in {"mobilenet_v3", "mobilenet_v3_large"}:
             x = self.model.features(x)
             x = self.model.avgpool(x)
             return torch.flatten(x, 1)
@@ -59,7 +61,12 @@ def _create_torchvision_backbone(name: str, pretrained: bool) -> Tuple[nn.Module
         net = models.efficientnet_b2(weights=weights)
         return TorchvisionBackbone(net, kind=name), BACKBONE_DIMS[name]
 
-    if name == "mobilenet_v3":
+    if name == "efficientnet_b4":
+        weights = models.EfficientNet_B4_Weights.IMAGENET1K_V1 if pretrained else None
+        net = models.efficientnet_b4(weights=weights)
+        return TorchvisionBackbone(net, kind=name), BACKBONE_DIMS[name]
+
+    if name in {"mobilenet_v3", "mobilenet_v3_large"}:
         weights = models.MobileNet_V3_Large_Weights.IMAGENET1K_V2 if pretrained else None
         net = models.mobilenet_v3_large(weights=weights)
         return TorchvisionBackbone(net, kind=name), BACKBONE_DIMS[name]
@@ -86,7 +93,7 @@ def _create_clip_backbone(name: str, pretrained: bool) -> Tuple[nn.Module, int]:
 def create_backbone(name: str, pretrained: bool = True) -> Tuple[nn.Module, int]:
     """Create a feature extractor and return (module, feature_dim)."""
     key = name.lower()
-    if key in {"efficientnet_b2", "mobilenet_v3"}:
+    if key in {"efficientnet_b2", "efficientnet_b4", "mobilenet_v3", "mobilenet_v3_large"}:
         return _create_torchvision_backbone(key, pretrained=pretrained)
 
     if key in {"clip_vit_b32", "clip_vit_l14"}:

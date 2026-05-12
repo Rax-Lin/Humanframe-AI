@@ -137,6 +137,7 @@ def _save_checkpoint(
     best_metric: float,
     best_epoch: int = -1,
     scheduler=None,
+    logger=None,
 ):
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -150,6 +151,15 @@ def _save_checkpoint(
         },
         checkpoint_path,
     )
+    size_mb = os.path.getsize(checkpoint_path) / (1024 ** 2)
+    if logger is not None:
+        logger.info("Checkpoint size: %.1f MB (%s)", size_mb, checkpoint_path.as_posix())
+        if size_mb > 200.0:
+            logger.warning(
+                "Checkpoint size %.1fMB exceeds 200MB Pi deployment limit (%s)",
+                size_mb,
+                checkpoint_path.as_posix(),
+            )
 
 
 def run_training(config: Dict, resume: Optional[str] = None) -> Dict[str, float]:
@@ -190,7 +200,7 @@ def run_training(config: Dict, resume: Optional[str] = None) -> Dict[str, float]
         logger.info("Resumed from %s at epoch %d", resume, start_epoch)
 
     epochs = int(config["training"]["epochs"])
-    checkpoint_dir = Path("models/checkpoints")
+    checkpoint_dir = Path(config["training"].get("checkpoint_dir", "models/checkpoints"))
 
     # Two-phase schedule:
     # Phase 1: freeze backbone for first `freeze_epochs` epochs.
@@ -279,6 +289,7 @@ def run_training(config: Dict, resume: Optional[str] = None) -> Dict[str, float]
             best_val_mae,
             best_epoch=best_epoch,
             scheduler=scheduler,
+            logger=logger,
         )
 
         in_phase1 = freeze_epochs > 0 and epoch < freeze_epochs
@@ -294,6 +305,7 @@ def run_training(config: Dict, resume: Optional[str] = None) -> Dict[str, float]
                 best_val_mae,
                 best_epoch=best_epoch,
                 scheduler=scheduler,
+                logger=logger,
             )
             logger.info("New best checkpoint saved (val_mae=%.4f)", best_val_mae)
         else:

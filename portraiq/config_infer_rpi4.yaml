@@ -1,5 +1,5 @@
 model:
-  backbone: mobilenet_v3
+  backbone: efficientnet_b4
   pretrained: false
   checkpoint: null
   backbone_lr_scale: 0.1
@@ -12,3 +12,4 @@ gpu:
 
 inference:
   cpu_threads: 4
+  cpu_optimized: true

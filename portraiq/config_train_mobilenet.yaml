@@ -1,5 +1,5 @@
 model:
-  backbone: mobilenet_v3
+  backbone: efficientnet_b4
   pretrained: true
   checkpoint: null
   backbone_lr_scale: 0.1
@@ -7,9 +7,9 @@ model:
 training:
   seed: 42
   epochs: 50
-  freeze_epochs: 10
-  batch_size: 32
-  gradient_accumulation_steps: 4
+  freeze_epochs: 7
+  batch_size: 16
+  gradient_accumulation_steps: 8
   learning_rate: 0.0001
   weight_decay: 0.00001
   lr_scheduler: cosine
@@ -19,6 +19,8 @@ training:
   num_gpus: 1
   early_stopping_patience: 7
   loss: smooth_l1
+  variance_penalty: 0.1
+  checkpoint_dir: models/checkpoints/efficientnet_b4/
 
 data:
   image_size: 224

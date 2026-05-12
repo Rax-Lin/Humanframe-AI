@@ -54,7 +54,8 @@ class InferenceEngine:
 
         image_tensor = self.transform(image_pil).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            predicted_score = float(self.model(image_tensor).item())
+            raw_score = self.model(image_tensor)
+            predicted_score = float(torch.clamp(raw_score, 0.0, 10.0).item())
 
         overlay = draw_scoring_overlay(image_pil, predicted_score=predicted_score)
 

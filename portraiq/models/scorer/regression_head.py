@@ -4,17 +4,24 @@ import torch.nn as nn
 
 
 class RegressionHead(nn.Module):
-    """Predicts composition score in [0, 10]."""
+    """Predicts raw portrait aesthetic score logits (unbounded during training)."""
 
-    def __init__(self, input_dim: int, hidden_dim: int = 256, dropout: float = 0.3) -> None:
+    def __init__(self, input_dim: int) -> None:
         super().__init__()
+        # Backbone wrappers already output pooled feature vectors. This head
+        # expands capacity for better score calibration while staying lightweight.
         self.layers = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
+            nn.Linear(input_dim, 512),
             nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, 1),
+            nn.Dropout(0.3),
+            nn.Linear(512, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(256, 64),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.1),
+            nn.Linear(64, 1),
         )
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
-        raw = self.layers(features).squeeze(-1)
-        return torch.clamp(raw, 0.0, 10.0)
+        return self.layers(features).squeeze(-1)
