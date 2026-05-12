@@ -20,8 +20,8 @@ The scoring system combines two complementary sources:
 |-------|--------|
 | 0.0 – 5.0 | Poor |
 | 5.0 – 7.5 | Acceptable |
-| 7.5 – 9.5 | Good |
-| 9.5 – 10.0 | Excellent |
+| 7.5 – 9.0 | Good |
+| 9.0 – 10.0 | Excellent |
 
 These four levels represent overall aesthetic quality tiers rather than position-only composition quality.
 
@@ -35,16 +35,17 @@ portraiq/
 ├── data/                            # Dataset (fully independent from all code)
 │   ├── raw/                         # Original portrait images, untouched
 │   │   ├── level1_poor/             # AVA score < 5.0
-│   │   ├── level2_acceptable/       # AVA score 5.0–7.0
-│   │   ├── level3_good/             # AVA score >= 7.0
+│   │   ├── level2_acceptable/       # AVA score 5.0–7.5
+│   │   ├── level3_good/             # AVA score 7.5–9.0
 │   │   └── level4_excellent/        # Pexels + Unsplash portraits for excellent class
 │   ├── processed/                   # Training-ready portrait images (person-filtered)
 │   │   ├── level1_poor/             # AVA score < 5.0
-│   │   ├── level2_acceptable/       # AVA score 5.0–7.0
-│   │   ├── level3_good/             # AVA score >= 7.0
+│   │   ├── level2_acceptable/       # AVA score 5.0–7.5
+│   │   ├── level3_good/             # AVA score 7.5–9.0
 │   │   └── level4_excellent/        # Pexels + Unsplash portraits for excellent class
 │   ├── annotations/                 # Per-image score labels (includes level3_ffhq.json, level4_excellent.json, level4_smugmug.json)
-│   └── splits/                      # train / val / test index files
+│   ├── splits/                      # train / val / test index files
+│   └── README.md                    # Data collection/filtering/annotation guide
 │
 ├── models/                          # Model definitions & weights (shared by both pipelines)
 │   ├── backbone/                    # Feature extractor (CLIP ViT-L/14)
@@ -78,7 +79,7 @@ portraiq/
 ├── requirements_infer_full.txt      # Full inference dependencies (YOLO + CLIP)
 ├── requirements_infer_rpi4.txt      # Raspberry Pi helper deps (torch installed separately)
 ├── config.yaml                      # Global project configuration
-├── config_train_mobilenet.yaml      # Training config for Raspberry Pi deployment backbone
+├── config_train_mobilenet.yaml      # Lightweight training config (EfficientNet-B4 profile for Raspberry Pi deployment)
 ├── config_infer_rpi4.yaml           # Raspberry Pi 4 CPU inference config
 └── README.md
 ```
@@ -116,25 +117,29 @@ All CUDA configuration is centralized in `utils/gpu_config.py`. The current work
 
 ### Backbone — Feature Extractor
 
-| Option | Parameters | VRAM (per GPU) | Notes |
-|--------|-----------|----------------|-------|
-| EfficientNet-B2 | ~9M | < 2 GB | Lightweight baseline; useful for rapid iteration |
-| MobileNetV3-Large | ~5M | < 1 GB | Fastest inference; suitable for real-time use |
-| CLIP ViT-B/32 | ~86M | ~4 GB | Strong compositional semantics; good accuracy/speed balance |
-| **CLIP ViT-L/14** | **~307M** | **~10 GB** | **Best accuracy; feasible on RTX 4070 SUPER with reduced batch size** |
-| CLIP ViT-L/14@336 | ~307M | ~14 GB | Higher resolution input; usually requires very small batches on 12 GB GPUs |
+| Option | Parameters | Checkpoint Size | Input Size | Notes |
+|--------|------------|-----------------|------------|-------|
+| MobileNetV3-Large | ~5M | ~44MB | 224×224 | Previous lightweight baseline |
+| EfficientNet-B2 | ~9M | ~80MB | 260×260 | Intermediate option |
+| **EfficientNet-B4** | **~19M** | **~176MB** | **380×380** | **Recommended Pi deployment profile (target <200MB)** |
+| CLIP ViT-L/14 | ~307M | ~1.1GB | 224×224 | High-accuracy workstation model |
 
 The recommended approach is to use a **pretrained CLIP visual encoder** as the backbone. On the current RTX 4070 SUPER setup, start with ViT-B/32 for faster iteration and move to ViT-L/14 for final accuracy (with smaller batches or gradient accumulation). ViT-L/14 produces richer spatial feature representations that better capture global portrait aesthetics. Only the scoring head is trained from scratch; the backbone is fine-tuned with a low learning rate.
 
 ### Scoring Head — Regression
 
-A lightweight regression head attached to the backbone output:
+A lightweight-but-higher-capacity regression head attached to the backbone output:
 
 ```
-Backbone Features → Linear(D, 256) → ReLU → Dropout(0.3) → Linear(256, 1) → Clamp(0, 10)
+Backbone Features → Linear(D, 512) → ReLU → Dropout(0.3)
+                 → Linear(512, 256) → ReLU → Dropout(0.2)
+                 → Linear(256, 64) → ReLU → Dropout(0.1)
+                 → Linear(64, 1) → Clamp(0, 10)
 ```
 
-`D` depends on backbone (`clip_vit_l14=768`, `clip_vit_b32=512`, `efficientnet_b2=1408`, `mobilenet_v3=960`) and is selected automatically in `models/backbone/factory.py`. Output is a single float in [0.0, 10.0].
+`D` depends on backbone (`clip_vit_l14=768`, `clip_vit_b32=512`, `efficientnet_b2=1408`, `efficientnet_b4=1792`, `mobilenet_v3_large=960`) and is selected automatically in `models/backbone/factory.py`. Output is a single float in [0.0, 10.0].
+
+For Raspberry Pi deployment, the EfficientNet-B4 profile uses `380×380` input resolution and targets approximately **176MB** checkpoints (kept under **200MB**) for improved accuracy while remaining deployable on Pi 4.
 
 ### Training Strategy
 
@@ -174,179 +179,11 @@ Visualize & Output (visualize.py)
 
 ## Dataset Strategy
 
-Update: Level-4 training photos now also include SmugMug-collected portraits (high-quality editorial/public portfolio style) after YOLO person filtering.
+All data collection, filtering, and annotation instructions were moved to:
 
-### Source Scope (Simplified)
+- `portraiq/data/README.md`
 
-This project uses five sources for dataset construction:
-
-1. **AVA Dataset** for Level 1 to Level 3:
-   - `level1_poor/` -> AVA score <= 4.5
-   - `level2_acceptable/` -> AVA score 5.0–7.0
-   - `level3_good/` -> AVA score >= 7.0
-2. **FFHQ Dataset (Hugging Face)** for Level 3:
-   - downloaded from `datasets/ffhq` via `huggingface_hub`
-   - saved under `data/raw/level3_good/ffhq/`, then person-filtered into `data/processed/level3_good/`
-   - fixed score `8.0` (`annotator: ffhq_fixed`) because FFHQ portraits are generally high-quality but not necessarily award-winning aesthetics
-   - source images are typically `1024x1024` PNG and are resized by the existing training preprocessing pipeline
-3. **Pexels API** for Level 4:
-   - `level4_excellent/` -> Pexels portrait queries + person filtering, fixed score 9.5
-4. **Unsplash API** for Level 4:
-   - portrait queries + person filtering, fixed score 9.5
-   - only images with `width >= 800` and `height >= 800` are considered before download
-5. **SmugMug ImageSearch API** for Level 4:
-   - portrait keyword queries + person filtering, fixed score 9.5
-   - requires `SMUGMUG_API_KEY` in environment
-AVA is used as the primary source because it provides large-scale human aesthetic preference ratings that directly align with this project’s aesthetic quality objective.
-
-For AVA samples, vote-distribution agreement filtering is applied:
-- Keep as-is when `score_std < 1.0` (high annotator consensus).
-- Keep with smoothing when `1.0 <= score_std < 1.5`:  
-  `smoothed_score = raw_score * 0.9 + 5.0 * 0.1`
-- Discard when `score_std >= 1.5` (high annotator disagreement).
-
-The computed `score_std` is stored in annotation records alongside `score`.
-
-### Expected Dataset Size After Filtering (Guideline)
-
-| Level | Primary Sources | Typical Scale After Person Filtering |
-|-------|------------------|--------------------------------------|
-| Level 1 (Poor) | AVA | depends on AVA split/filter |
-| Level 2 (Acceptable) | AVA | depends on AVA split/filter |
-| Level 3 (Good) | AVA + FFHQ | AVA Level-3 + approximately **50,000–70,000** additional FFHQ portraits |
-| Level 4 (Excellent) | Pexels + Unsplash + SmugMug | typically adds approximately **3,000–5,000** SmugMug portraits after YOLO filtering, plus other Level-4 sources |
-
-### Labeling Strategy
-
-For bootstrapping with limited manual effort:
-
-1. Collect ~300–500 images manually labeled on the 0–10 scale
-2. Train an initial model on this seed set
-3. Run the model on unlabeled images and review high-confidence predictions
-4. Iteratively expand the labeled set (human-in-the-loop)
-
-For `level4_excellent/` labels, use a stable fixed value (`9.5`) instead of random assignment.
-
-For FFHQ Level-3 labels, use a stable fixed value (`8.0`) to represent consistently strong portrait quality without forcing them into the top-most excellent tier.
-
-### Level 3 Collection (FFHQ)
-
-Run in project root:
-```bash
-cd ~/emb_project/Humanframe-AI
-source .venv/bin/activate
-```
-
-Foreground run:
-```bash
-python3 data_collect/ffhq_download.py \
-  --max_images 70000 \
-  --person_conf 0.25 \
-  --resume
-```
-
-Optional explicit repo selection:
-```bash
-python3 data_collect/ffhq_download.py \
-  --repo_id marcosv/ffhq-dataset \
-  --max_images 70000 \
-  --person_conf 0.25 \
-  --resume
-```
-
-This writes:
-- Raw images: `portraiq/data/raw/level3_good/ffhq/`
-- Processed images: `portraiq/data/processed/level3_good/`
-- Annotations: `portraiq/data/annotations/level3_ffhq.json`
-
-### Level 4 Collection (Unified: Pexels + Unsplash)
-
-Run in project root:
-```bash
-cd ~/emb_project/Humanframe-AI
-source .venv/bin/activate
-```
-
-Set API keys in environment:
-```bash
-export PEXELS_API_KEY="<your_pexels_api_key>"
-export UNSPLASH_ACCESS_KEY="<your_unsplash_access_key>"
-```
-Use `--source all` only when both keys are set.
-
-Foreground runs:
-```bash
-# Download from both sources
-python3 data_collect/level4_download.py --source all --max_images 5000 --resume
-
-# Download from Pexels only
-python3 data_collect/level4_download.py --source pexels --max_images 5000 --resume
-
-# Download from Unsplash only
-python3 data_collect/level4_download.py --source unsplash --max_images 1000 --resume
-```
-
-Background run (recommended for long jobs):
-```bash
-mkdir -p logs
-nohup python3 data_collect/level4_download.py \
-  --source all \
-  --max_images 5000 \
-  --per_keyword 2000 \
-  --person_conf 0.25 \
-  --resume \
-  > logs/level4_download.log 2>&1 &
-echo $! > logs/level4_download.pid
-```
-
-Monitor / stop:
-```bash
-tail -f logs/level4_download.log
-kill "$(cat logs/level4_download.pid)"
-```
-
-This writes:
-- Raw images: `portraiq/data/raw/level4_excellent/`
-- Processed images: `portraiq/data/processed/level4_excellent/`
-- Annotations: `portraiq/data/annotations/level4_excellent.json`
-
-### Level 4 Collection (SmugMug)
-
-Set API key:
-```bash
-export SMUGMUG_API_KEY="your_key_here"
-```
-
-Foreground run:
-```bash
-python3 data_collect/smugmug_download.py \
-  --max_images 5000 \
-  --per_keyword 1500 \
-  --scope /api/v2/user/cmac \
-  --discover_scopes \
-  --max_scopes 50 \
-  --person_conf 0.25 \
-  --resume
-```
-
-This writes:
-- Raw images: `portraiq/data/raw/level4_excellent/`
-- Processed images: `portraiq/data/processed/level4_excellent/`
-- Annotations: `portraiq/data/annotations/level4_smugmug.json`
-
-### Annotation JSON Format
-
-```json
-{
-  "image_id": "img_0042",
-  "filename": "level2_acceptable/portrait_042.jpg",
-  "category": "portrait",
-  "score": 6.3,
-  "score_std": 0.82,
-  "annotator": "ava",
-  "split": "train"
-}
-```
+This includes AVA two-stage collection, FFHQ/Level-4 source collection, annotation format, and data troubleshooting.
 
 ---
 
@@ -367,7 +204,7 @@ Two separate requirements files keep the execution environment lean:
 ### Deployment Targets
 
 1. **RTX 4070 SUPER workstation (Training + Inference):** current development target for training and inference.
-2. **Raspberry Pi 4 (Inference only):** direct pip install with `requirements_infer_rpi4.txt` (no container needed).
+2. **Raspberry Pi 4 (Inference only):** run inference in a dedicated Python virtual environment (`venv`) to avoid system Python package conflicts (PEP 668).
 
 ### Local RTX 4070 Workflow (Recommended)
 
@@ -406,56 +243,8 @@ if torch.cuda.is_available():
 PY
 ```
 
-AVA dataset preparation is now recommended as a two-stage pipeline to reduce CPU spikes and improve stability:
-
-1) Stage A (`download_raw`): download AVA images + score metadata into `data/raw/` and `data/annotations/ava_raw_download.json` (no person filtering).
-2) Stage B (`build_processed`): read raw manifest, run person filtering, copy kept samples to `data/processed/`, and write `data/annotations/ava_from_hf.json`.
-
-Important:
-Run Stage A and Stage B sequentially.
-Do not run them at the same time.
-Wait for Stage A to finish before starting Stage B.
-
-Stage A (download only):
-```bash
-python3 data_collect/ava_download.py \
-  --mode download_raw \
-  --clean-levels \
-  --clean-annotations \
-  --save-every 200
-```
-
-Stage A finished check:
-```bash
-ls -lh portraiq/data/annotations/ava_raw_download.json
-```
-
-Stage B (raw -> processed with person filtering):
-```bash
-python3 data_collect/ava_download.py \
-  --mode build_processed \
-  --person-filter \
-  --person-backend torchvision \
-  --person-device cuda:0 \
-  --person-imgsz 384 \
-  --throttle-ms 20 \
-  --clean-levels \
-  --clean-annotations \
-  --save-every 200
-```
-
-If Stage B gets interrupted, resume without cleaning:
-```bash
-python3 data_collect/ava_download.py \
-  --mode build_processed \
-  --person-filter \
-  --person-backend torchvision \
-  --person-device cuda:0 \
-  --person-imgsz 384 \
-  --throttle-ms 20 \
-  --resume \
-  --save-every 200
-```
+Dataset collection commands (AVA/FFHQ/Level-4 sources) are documented in:
+`portraiq/data/README.md`
 
 Install the dependency set based on your target:
 
@@ -475,6 +264,10 @@ python -m pip install -r portraiq/requirements_infer_full.txt
 ```bash
 python -m pip install -r portraiq/requirements_infer_rpi4.txt
 ```
+
+Raspberry Pi note:
+- On Raspberry Pi OS, do not install into system Python directly.
+- Create/activate a project venv first, then install requirements inside that venv.
 
 ---
 
@@ -509,7 +302,7 @@ source ../.venv/bin/activate
 python main_train.py --config config.yaml
 ```
 
-Train a Raspberry Pi-friendly checkpoint (MobileNetV3 backbone):
+Train a Raspberry Pi-friendly checkpoint (EfficientNet-B4 backbone):
 ```bash
 cd ~/emb_project/Humanframe-AI/portraiq
 source ../.venv/bin/activate
@@ -557,27 +350,40 @@ cd ~/emb_project/Humanframe-AI/portraiq
 python3 main_infer.py --input_dir ./photos/ --output_dir ./results/ --checkpoint models/checkpoints/best.pth
 ```
 
-Raspberry Pi 4 CPU mode (pip-based, no container):
+Raspberry Pi 4 CPU mode (venv-based, no container):
 ```bash
-cd /home/pi/portraiq
+cd /home/pi/Humanframe-AI/portraiq
+sudo apt update
+sudo apt install -y python3-venv python3-full
+python3 -m venv .venv
+source .venv/bin/activate
+python -m ensurepip --upgrade
+python -m pip install --upgrade pip setuptools wheel
 python -m pip install -r requirements_infer_rpi4.txt
 python main_infer.py \
   --config config_infer_rpi4.yaml \
   --image path/to/photo.jpg \
-  --checkpoint models/checkpoints/mobilenet_best.pth \
+  --checkpoint models/checkpoints/efficientnet_b4/best.pth \
   --cpu_optimized \
   --no_overlay
 ```
 
+If `pip` in the venv reports resolver/import errors (for example `InconsistentCandidate`), rebuild the venv:
+```bash
+cd /home/pi/Humanframe-AI/portraiq
+deactivate 2>/dev/null || true
+rm -rf .venv
+python3 -m venv .venv
+source .venv/bin/activate
+python -m ensurepip --upgrade
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements_infer_rpi4.txt
+```
+Expected CPU latency on Raspberry Pi 4 with EfficientNet-B4 is approximately **2–5 seconds per image** (depends on SD card, thermal throttling, and background load).
+
 ### Training Data Troubleshooting (`total: 0`)
 
-If your check prints `total: 0 train: 0 val: 0 test: 0`, verify:
-
-1. JSON files exist under `data/annotations/` inside the running environment.
-2. You are in the correct working directory (`~/emb_project/Humanframe-AI/portraiq` for local runs).
-3. JSON shape matches project format (single object or list of objects, each with `filename` and `score`).
-4. If you use explicit split labels, at least some records must have `"split": "train"`.
-5. Image files referenced by `filename` are placed under `data/processed/`.
+See `portraiq/data/README.md` for dataset/annotation troubleshooting steps.
 
 ---
 
@@ -586,7 +392,7 @@ If your check prints `total: 0 train: 0 val: 0 test: 0`, verify:
 Use the provided config files directly instead of copying settings from README:
 
 - `portraiq/config.yaml` (default training/inference on workstation)
-- `portraiq/config_train_mobilenet.yaml` (MobileNet training profile)
+- `portraiq/config_train_mobilenet.yaml` (EfficientNet-B4 lightweight training profile)
 - `portraiq/config_infer_rpi4.yaml` (Raspberry Pi inference profile)
 
 If you need custom hyperparameters, duplicate one of the YAML files and pass it with `--config`.

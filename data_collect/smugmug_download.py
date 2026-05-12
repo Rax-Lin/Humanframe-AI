@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import random
 import shutil
 import time
 from pathlib import Path
@@ -42,6 +44,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=int, default=20, help="HTTP timeout in seconds")
     parser.add_argument("--save_every", type=int, default=200, help="Save annotation every N newly kept images")
     parser.add_argument("--sleep_ms", type=int, default=0, help="Sleep milliseconds between requests")
+    parser.add_argument(
+        "--api_sleep_ms",
+        type=int,
+        default=250,
+        help="Sleep milliseconds between SmugMug API requests to reduce rate-limit hits",
+    )
+    parser.add_argument(
+        "--max_retries",
+        type=int,
+        default=6,
+        help="Maximum retries for retryable API errors (429/5xx/timeouts)",
+    )
     parser.add_argument("--min_side", type=int, default=384, help="Minimum accepted width/height")
     parser.add_argument("--person_model", type=str, default="yolov8n.pt", help="YOLO model path/name")
     parser.add_argument(
@@ -104,6 +118,83 @@ def _download_binary(url: str, dst: Path, timeout: int) -> bool:
         return True
     except Exception:
         return False
+
+
+def _retry_after_seconds(resp: requests.Response, fallback_seconds: float) -> float:
+    header = resp.headers.get("Retry-After")
+    if not header:
+        return fallback_seconds
+    try:
+        seconds = float(header.strip())
+        if math.isfinite(seconds) and seconds >= 0:
+            return seconds
+    except ValueError:
+        pass
+    return fallback_seconds
+
+
+def _request_json_with_backoff(
+    url: str,
+    *,
+    headers: Dict[str, str],
+    params: Dict[str, object],
+    timeout: int,
+    max_retries: int,
+    api_sleep_ms: int,
+    context: str,
+) -> Optional[Dict]:
+    attempt = 0
+    while attempt <= max_retries:
+        if api_sleep_ms > 0:
+            time.sleep(float(api_sleep_ms) / 1000.0)
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+        except requests.RequestException as exc:
+            if attempt >= max_retries:
+                print(f"{context}: request failed after retries: {exc}")
+                return None
+            wait_s = min(60.0, (2 ** attempt) + random.uniform(0.0, 0.75))
+            print(f"{context}: request error ({exc}); retry in {wait_s:.1f}s")
+            time.sleep(wait_s)
+            attempt += 1
+            continue
+
+        if resp.status_code == 429:
+            if attempt >= max_retries:
+                print(f"{context}: rate-limited (429) after retries; skipping this query.")
+                return None
+            wait_s = _retry_after_seconds(
+                resp,
+                fallback_seconds=min(90.0, (2 ** attempt) + random.uniform(0.0, 1.0)),
+            )
+            print(f"{context}: rate-limited (429); retry in {wait_s:.1f}s")
+            time.sleep(wait_s)
+            attempt += 1
+            continue
+
+        if 500 <= resp.status_code < 600:
+            if attempt >= max_retries:
+                print(f"{context}: server error {resp.status_code} after retries; skipping.")
+                return None
+            wait_s = min(60.0, (2 ** attempt) + random.uniform(0.0, 0.75))
+            print(f"{context}: server error {resp.status_code}; retry in {wait_s:.1f}s")
+            time.sleep(wait_s)
+            attempt += 1
+            continue
+
+        try:
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:  # noqa: BLE001
+            body = ""
+            try:
+                body = resp.text[:240].replace("\n", " ")
+            except Exception:
+                pass
+            print(f"{context}: request failed ({exc}) | body={body}")
+            return None
+
+    return None
 
 
 def _extract_items(payload: Dict) -> List[Dict]:
@@ -173,6 +264,8 @@ def _iter_smugmug_candidates(
     scope: str,
     per_keyword: int,
     timeout: int,
+    max_retries: int,
+    api_sleep_ms: int,
 ) -> Iterable[Tuple[str, str]]:
     keywords = ["portrait", "professional portrait", "street portrait", "environmental portrait"]
     headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
@@ -188,19 +281,16 @@ def _iter_smugmug_candidates(
                 "count": 100,
                 "start": start,
             }
-            try:
-                resp = requests.get(API_URL, headers=headers, params=params, timeout=timeout)
-                resp.raise_for_status()
-                payload = resp.json()
-            except Exception as exc:  # noqa: BLE001
-                extra = ""
-                try:
-                    if "resp" in locals():
-                        body = resp.text[:400].replace("\n", " ")
-                        extra = f" | body={body}"
-                except Exception:
-                    pass
-                print(f"SmugMug search failed for '{kw}' start {start}: {exc}{extra}")
+            payload = _request_json_with_backoff(
+                API_URL,
+                headers=headers,
+                params=params,
+                timeout=timeout,
+                max_retries=max_retries,
+                api_sleep_ms=api_sleep_ms,
+                context=f"SmugMug search failed for '{kw}' start {start} scope {scope}",
+            )
+            if payload is None:
                 break
 
             items = _extract_items(payload)
@@ -240,16 +330,16 @@ def _discover_user_scopes(api_key: str, timeout: int, max_scopes: int) -> List[s
         start = 1
         while len(scopes) < max_scopes:
             params = {"APIKey": api_key, "q": term, "count": 100, "start": start}
-            try:
-                r = requests.get(
-                    "https://api.smugmug.com/api/v2/user!search",
-                    headers=headers,
-                    params=params,
-                    timeout=timeout,
-                )
-                r.raise_for_status()
-                payload = r.json()
-            except Exception:
+            payload = _request_json_with_backoff(
+                "https://api.smugmug.com/api/v2/user!search",
+                headers=headers,
+                params=params,
+                timeout=timeout,
+                max_retries=4,
+                api_sleep_ms=200,
+                context=f"SmugMug scope discovery failed for term '{term}' start {start}",
+            )
+            if payload is None:
                 break
 
             users = payload.get("Response", {}).get("User", [])
@@ -335,6 +425,8 @@ def main() -> None:
             scope=scope,
             per_keyword=int(args.per_keyword),
             timeout=int(args.timeout),
+            max_retries=max(0, int(args.max_retries)),
+            api_sleep_ms=max(0, int(args.api_sleep_ms)),
         )
 
         for ext_id, largest_uri in candidates:
@@ -353,19 +445,23 @@ def main() -> None:
             largest_url = _largest_image_url({"LargestImage": {"Uri": largest_uri}})
             if largest_url is None:
                 # Resolve URI form (/api/v2/image/...!largestimage) to URL payload.
-                try:
-                    endpoint = f"https://api.smugmug.com{largest_uri}"
-                    headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
-                    r = requests.get(endpoint, headers=headers, params={"APIKey": api_key}, timeout=int(args.timeout))
-                    r.raise_for_status()
-                    payload = r.json()
+                endpoint = f"https://api.smugmug.com{largest_uri}"
+                headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
+                payload = _request_json_with_backoff(
+                    endpoint,
+                    headers=headers,
+                    params={"APIKey": api_key},
+                    timeout=int(args.timeout),
+                    max_retries=max(0, int(args.max_retries)),
+                    api_sleep_ms=max(0, int(args.api_sleep_ms)),
+                    context=f"SmugMug largestimage resolve failed for {image_id}",
+                )
+                if payload is not None:
                     largest_url = (
                         payload.get("Response", {})
                         .get("LargestImage", {})
                         .get("Url")
                     )
-                except Exception:
-                    largest_url = None
 
             if not largest_url:
                 continue

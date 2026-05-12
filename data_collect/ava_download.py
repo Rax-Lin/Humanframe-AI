@@ -79,7 +79,7 @@ def parse_args():
     parser.add_argument(
         "--good-threshold",
         type=float,
-        default=7.0,
+        default=7.5,
         help="Scores >= threshold go to level3_good",
     )
     parser.add_argument(

@@ -32,6 +32,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max_images", type=int, default=5000, help="Maximum total annotated images")
     parser.add_argument(
+        "--target_new_raw",
+        type=int,
+        default=0,
+        help="Stop after downloading this many NEW raw images (0 = disabled)",
+    )
+    parser.add_argument(
         "--per_keyword",
         type=int,
         default=2000,
@@ -46,6 +52,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sleep_ms", type=int, default=0, help="Sleep milliseconds between requests")
     parser.add_argument("--min_side", type=int, default=384, help="Minimum accepted width/height")
     parser.add_argument("--person_model", type=str, default="yolov8n.pt", help="YOLO model path/name")
+    parser.add_argument(
+        "--use_pexels_curated",
+        action="store_true",
+        help="Also use Pexels curated endpoint for additional non-search candidates",
+    )
+    parser.add_argument(
+        "--use_unsplash_popular",
+        action="store_true",
+        help="Also use Unsplash popular feed for additional non-search candidates",
+    )
 
     parser.add_argument("--train_ratio", type=float, default=0.8)
     parser.add_argument("--val_ratio", type=float, default=0.1)
@@ -120,12 +136,32 @@ def pexels_search(api_key: str, query: str, page: int, per_page: int, timeout: i
     return resp.json()
 
 
+def pexels_curated(api_key: str, page: int, per_page: int, timeout: int) -> Dict:
+    url = "https://api.pexels.com/v1/curated"
+    headers = {"Authorization": api_key}
+    params = {"page": page, "per_page": per_page}
+    resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def iter_pexels_candidates(
     api_key: str,
     per_keyword: int,
     timeout: int,
 ) -> Iterable[Tuple[str, str]]:
-    keywords = ["portrait", "street portrait", "environmental portrait"]
+    keywords = [
+        "portrait",
+        "street portrait",
+        "environmental portrait",
+        "editorial portrait",
+        "studio portrait",
+        "fashion portrait",
+        "candid portrait",
+        "black and white portrait",
+        "fine art portrait",
+        "dramatic portrait lighting",
+    ]
     for kw in keywords:
         page = 1
         seen_for_kw = 0
@@ -157,10 +193,51 @@ def iter_pexels_candidates(
             page += 1
 
 
+def iter_pexels_curated_candidates(
+    api_key: str,
+    cap: int,
+    timeout: int,
+) -> Iterable[Tuple[str, str]]:
+    page = 1
+    seen = 0
+    while seen < cap:
+        per_page = min(80, max(1, cap - seen))
+        try:
+            payload = pexels_curated(api_key, page=page, per_page=per_page, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Pexels curated failed on page {page}: {exc}")
+            break
+        photos = payload.get("photos", []) if isinstance(payload, dict) else []
+        if not photos:
+            break
+        for photo in photos:
+            pid = str(photo.get("id", "")).strip()
+            if not pid:
+                continue
+            src = photo.get("src", {})
+            image_url = src.get("large2x") or src.get("large") or src.get("original")
+            if not image_url:
+                continue
+            seen += 1
+            yield pid, str(image_url)
+            if seen >= cap:
+                break
+        page += 1
+
+
 def unsplash_search(api_key: str, query: str, page: int, per_page: int, timeout: int) -> Dict:
     url = "https://api.unsplash.com/search/photos"
     headers = {"Authorization": f"Client-ID {api_key}"}
     params = {"query": query, "page": page, "per_page": per_page, "orientation": "portrait"}
+    resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def unsplash_popular(api_key: str, page: int, per_page: int, timeout: int) -> Dict:
+    url = "https://api.unsplash.com/photos"
+    headers = {"Authorization": f"Client-ID {api_key}"}
+    params = {"page": page, "per_page": per_page, "order_by": "popular"}
     resp = requests.get(url, headers=headers, params=params, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
@@ -171,7 +248,18 @@ def iter_unsplash_candidates(
     per_keyword: int,
     timeout: int,
 ) -> Iterable[Tuple[str, str]]:
-    keywords = ["portrait photography", "professional portrait", "street portrait"]
+    keywords = [
+        "portrait photography",
+        "professional portrait",
+        "street portrait",
+        "environmental portrait",
+        "editorial portrait",
+        "studio portrait",
+        "fashion portrait",
+        "moody portrait",
+        "cinematic portrait",
+        "headshot portrait",
+    ]
     for kw in keywords:
         page = 1
         seen_for_kw = 0
@@ -205,6 +293,50 @@ def iter_unsplash_candidates(
                     break
 
             page += 1
+
+
+def iter_unsplash_popular_candidates(
+    api_key: str,
+    cap: int,
+    timeout: int,
+) -> Iterable[Tuple[str, str]]:
+    page = 1
+    seen = 0
+    while seen < cap:
+        per_page = min(30, max(1, cap - seen))
+        try:
+            payload = unsplash_popular(api_key, page=page, per_page=per_page, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Unsplash popular failed on page {page}: {exc}")
+            break
+
+        photos = payload if isinstance(payload, list) else []
+        if not photos:
+            break
+
+        for photo in photos:
+            pid = str(photo.get("id", "")).strip()
+            if not pid:
+                continue
+            width = int(photo.get("width") or 0)
+            height = int(photo.get("height") or 0)
+            if width < 800 or height < 800:
+                continue
+            urls = photo.get("urls", {})
+            image_url = urls.get("regular") or urls.get("full") or urls.get("raw")
+            if not image_url:
+                continue
+            seen += 1
+            yield pid, str(image_url)
+            if seen >= cap:
+                break
+        page += 1
+
+
+def chain_candidates(*iterables: Iterable[Tuple[str, str]]) -> Iterable[Tuple[str, str]]:
+    for it in iterables:
+        for item in it:
+            yield item
 
 
 def main() -> None:
@@ -294,10 +426,17 @@ def main() -> None:
                 "pexels",
                 9.5,
                 "pexels_fixed",
-                iter_pexels_candidates(
-                    api_key=str(pexels_api_key),
-                    per_keyword=int(args.per_keyword),
-                    timeout=int(args.timeout),
+                chain_candidates(
+                    iter_pexels_candidates(
+                        api_key=str(pexels_api_key),
+                        per_keyword=int(args.per_keyword),
+                        timeout=int(args.timeout),
+                    ),
+                    iter_pexels_curated_candidates(
+                        api_key=str(pexels_api_key),
+                        cap=int(args.per_keyword) if args.use_pexels_curated else 0,
+                        timeout=int(args.timeout),
+                    ) if args.use_pexels_curated else [],
                 ),
             )
         )
@@ -307,10 +446,17 @@ def main() -> None:
                 "unsplash",
                 9.5,
                 "unsplash_fixed",
-                iter_unsplash_candidates(
-                    api_key=str(unsplash_api_key),
-                    per_keyword=int(args.per_keyword),
-                    timeout=int(args.timeout),
+                chain_candidates(
+                    iter_unsplash_candidates(
+                        api_key=str(unsplash_api_key),
+                        per_keyword=int(args.per_keyword),
+                        timeout=int(args.timeout),
+                    ),
+                    iter_unsplash_popular_candidates(
+                        api_key=str(unsplash_api_key),
+                        cap=int(args.per_keyword) if args.use_unsplash_popular else 0,
+                        timeout=int(args.timeout),
+                    ) if args.use_unsplash_popular else [],
                 ),
             )
         )
@@ -318,6 +464,7 @@ def main() -> None:
     new_downloaded = 0
     new_kept = 0
     existing_raw_names = {p.name for p in paths["raw"].glob("*.jpg")}
+    seen_image_ids = set()
 
     for source_name, fixed_score, annotator, candidates in source_plan:
         retrieved_from_api = 0
@@ -327,6 +474,9 @@ def main() -> None:
                 break
 
             image_id = f"{source_name}_{ext_id}"
+            if image_id in seen_image_ids:
+                continue
+            seen_image_ids.add(image_id)
             raw_name = f"{image_id}.jpg"
             raw_path = paths["raw"] / raw_name
             proc_path = paths["processed"] / raw_name
@@ -344,6 +494,9 @@ def main() -> None:
                     continue
                 new_downloaded += 1
                 existing_raw_names.add(raw_name)
+                if int(args.target_new_raw) > 0 and new_downloaded >= int(args.target_new_raw):
+                    # We still run filtering on this image; stop after current loop step.
+                    pass
 
             try:
                 with Image.open(raw_path) as im:
@@ -386,10 +539,15 @@ def main() -> None:
             if args.sleep_ms > 0:
                 time.sleep(float(args.sleep_ms) / 1000.0)
 
+            if int(args.target_new_raw) > 0 and new_downloaded >= int(args.target_new_raw):
+                break
+
         print(
             f"DEBUG | source={source_name} | candidate_urls_retrieved_before_yolo={retrieved_from_api}"
         )
         if len(annotations) >= int(args.max_images):
+            break
+        if int(args.target_new_raw) > 0 and new_downloaded >= int(args.target_new_raw):
             break
 
     dump_json(output_json, annotations)

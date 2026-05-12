@@ -46,8 +46,25 @@ class InferenceEngine:
 
     def _optimize_for_cpu(self, model):
         torch.set_num_threads(max(1, int(self.config.get("inference", {}).get("cpu_threads", 2))))
-        quantized = torch.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
-        return quantized
+        # Prefer ARM-friendly backend on Raspberry Pi; fallback safely if unavailable.
+        if hasattr(torch.backends, "quantized"):
+            try:
+                supported = torch.backends.quantized.supported_engines
+                if "qnnpack" in supported:
+                    torch.backends.quantized.engine = "qnnpack"
+                elif "fbgemm" in supported:
+                    torch.backends.quantized.engine = "fbgemm"
+            except Exception:
+                pass
+
+        try:
+            return torch.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
+        except Exception as exc:
+            print(
+                f"Warning: CPU dynamic quantization unavailable on this platform ({exc}). "
+                "Falling back to non-quantized CPU inference."
+            )
+            return model
 
     def predict(self, image_path: str) -> Dict:
         image_pil = load_pil_rgb(Path(image_path))
