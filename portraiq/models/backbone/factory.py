@@ -14,11 +14,7 @@ CLIP_IMAGE_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_IMAGE_STD = (0.26862954, 0.26130258, 0.27577711)
 
 BACKBONE_DIMS = {
-    "efficientnet_b2": 1408,
     "efficientnet_b4": 1792,
-    "mobilenet_v3": 960,
-    "mobilenet_v3_large": 960,
-    "clip_vit_b32": 512,
     "clip_vit_l14": 768,
 }
 
@@ -30,11 +26,7 @@ class TorchvisionBackbone(nn.Module):
         self.kind = kind
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.kind in {"efficientnet_b2", "efficientnet_b4"}:
-            x = self.model.features(x)
-            x = self.model.avgpool(x)
-            return torch.flatten(x, 1)
-        if self.kind in {"mobilenet_v3", "mobilenet_v3_large"}:
+        if self.kind == "efficientnet_b4":
             x = self.model.features(x)
             x = self.model.avgpool(x)
             return torch.flatten(x, 1)
@@ -56,19 +48,9 @@ class OpenCLIPBackbone(nn.Module):
 
 
 def _create_torchvision_backbone(name: str, pretrained: bool) -> Tuple[nn.Module, int]:
-    if name == "efficientnet_b2":
-        weights = models.EfficientNet_B2_Weights.IMAGENET1K_V1 if pretrained else None
-        net = models.efficientnet_b2(weights=weights)
-        return TorchvisionBackbone(net, kind=name), BACKBONE_DIMS[name]
-
     if name == "efficientnet_b4":
         weights = models.EfficientNet_B4_Weights.IMAGENET1K_V1 if pretrained else None
         net = models.efficientnet_b4(weights=weights)
-        return TorchvisionBackbone(net, kind=name), BACKBONE_DIMS[name]
-
-    if name in {"mobilenet_v3", "mobilenet_v3_large"}:
-        weights = models.MobileNet_V3_Large_Weights.IMAGENET1K_V2 if pretrained else None
-        net = models.mobilenet_v3_large(weights=weights)
         return TorchvisionBackbone(net, kind=name), BACKBONE_DIMS[name]
 
     raise ValueError(f"Unknown torchvision backbone: {name}")
@@ -78,9 +60,7 @@ def _create_clip_backbone(name: str, pretrained: bool) -> Tuple[nn.Module, int]:
     if open_clip is None:
         raise ImportError("open-clip-torch is required for CLIP backbones. Install requirements first.")
 
-    if name == "clip_vit_b32":
-        clip_model_name = "ViT-B-32"
-    elif name == "clip_vit_l14":
+    if name == "clip_vit_l14":
         clip_model_name = "ViT-L-14"
     else:
         raise ValueError(f"Unsupported CLIP backbone: {name}")
@@ -93,10 +73,10 @@ def _create_clip_backbone(name: str, pretrained: bool) -> Tuple[nn.Module, int]:
 def create_backbone(name: str, pretrained: bool = True) -> Tuple[nn.Module, int]:
     """Create a feature extractor and return (module, feature_dim)."""
     key = name.lower()
-    if key in {"efficientnet_b2", "efficientnet_b4", "mobilenet_v3", "mobilenet_v3_large"}:
+    if key == "efficientnet_b4":
         return _create_torchvision_backbone(key, pretrained=pretrained)
 
-    if key in {"clip_vit_b32", "clip_vit_l14"}:
+    if key == "clip_vit_l14":
         return _create_clip_backbone(key, pretrained=pretrained)
 
     raise ValueError(

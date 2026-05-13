@@ -64,7 +64,7 @@ def _apply_score_std_policy(
     if float(score_std) >= float(score_std_max):
         return None
 
-    if 1.0 <= float(score_std) < float(score_std_max):
+    if 1.0 <= float(score_std) < float(score_std_max): # score std may not be used in this project
         alpha = min(max(float(label_smoothing_alpha), 0.0), 1.0)
         raw_score = float(record.get("raw_score", record["score"]))
         record["score"] = (raw_score * (1.0 - alpha)) + (5.0 * alpha)

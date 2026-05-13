@@ -62,8 +62,6 @@ portraiq/
 │
 ├── inference/                       # ── EXECUTION PIPELINE (standalone) ──
 │   ├── predict.py                   # Single-image scoring entry point
-│   ├── batch_predict.py             # Batch inference over a folder of images
-│   ├── scoring_rules.py             # Removed — not applicable to aesthetic scoring model
 │   └── visualize.py                 # Overlay score and prediction outputs
 │
 ├── utils/                           # Shared utilities — imported by both pipelines
@@ -137,7 +135,7 @@ Backbone Features → Linear(D, 512) → ReLU → Dropout(0.3)
                  → Linear(64, 1) → Clamp(0, 10)
 ```
 
-`D` depends on backbone (`clip_vit_l14=768`, `clip_vit_b32=512`, `efficientnet_b2=1408`, `efficientnet_b4=1792`, `mobilenet_v3_large=960`) and is selected automatically in `models/backbone/factory.py`. Output is a single float in [0.0, 10.0].
+`D` depends on backbone (`clip_vit_l14=768`, `efficientnet_b4=1792`) and is selected automatically in `models/backbone/factory.py`. Output is a single float in [0.0, 10.0].
 
 For Raspberry Pi deployment, the EfficientNet-B4 profile uses `380×380` input resolution and targets approximately **176MB** checkpoints (kept under **200MB**) for improved accuracy while remaining deployable on Pi 4.
 
@@ -268,6 +266,8 @@ python -m pip install -r portraiq/requirements_infer_rpi4.txt
 Raspberry Pi note:
 - On Raspberry Pi OS, do not install into system Python directly.
 - Create/activate a project venv first, then install requirements inside that venv.
+- For stable Pi inference, install `torch`/`torchvision` first with pinned versions, then install `requirements_infer_rpi4.txt`.
+- Avoid installing `requirements_infer.txt` directly on Pi when you need deterministic setup; it may resolve different wheels depending on mirror/state.
 
 ---
 
@@ -359,12 +359,27 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m ensurepip --upgrade
 python -m pip install --upgrade pip setuptools wheel
-python -m pip install -r requirements_infer_rpi4.txt
+# Install Pi-compatible core runtime first
+python -m pip install --no-cache-dir \
+  --extra-index-url https://www.piwheels.org/simple \
+  torch==2.2.2 torchvision==0.17.2
+python -m pip install --no-cache-dir numpy==1.26.4
+
+# Install remaining inference deps (PyYAML, Pillow, tqdm, etc.)
+python -m pip install --no-cache-dir -r requirements_infer_rpi4.txt
+
+# Optional sanity check
+python - << 'PY'
+import numpy, torch, torchvision
+print("numpy", numpy.__version__)
+print("torch", torch.__version__)
+print("torchvision", torchvision.__version__)
+PY
+
 python main_infer.py \
   --config config_infer_rpi4.yaml \
   --image path/to/photo.jpg \
   --checkpoint models/checkpoints/efficientnet_b4/best.pth \
-  --cpu_optimized \
   --no_overlay
 ```
 
@@ -377,9 +392,50 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m ensurepip --upgrade
 python -m pip install --upgrade pip setuptools wheel
-python -m pip install -r requirements_infer_rpi4.txt
+python -m pip install --no-cache-dir \
+  --extra-index-url https://www.piwheels.org/simple \
+  torch==2.2.2 torchvision==0.17.2
+python -m pip install --no-cache-dir numpy==1.26.4
+python -m pip install --no-cache-dir -r requirements_infer_rpi4.txt
+```
+
+If your runtime supports quantization backend correctly, you can add `--cpu_optimized` for inference:
+```bash
+python main_infer.py \
+  --config config_infer_rpi4.yaml \
+  --image path/to/photo.jpg \
+  --checkpoint models/checkpoints/efficientnet_b4/best.pth \
+  --cpu_optimized \
+  --no_overlay
 ```
 Expected CPU latency on Raspberry Pi 4 with EfficientNet-B4 is approximately **2–5 seconds per image** (depends on SD card, thermal throttling, and background load).
+
+### Simple API-style Inference (`human_predict_api.py`)
+
+For integration workflows (for example, receiving photos over SSH and returning only score + image name), use:
+
+```bash
+cd ~/emb_project/Humanframe-AI/portraiq
+source ../.venv/bin/activate
+python3 human_predict_api.py --image ./photos/test13.jpg --profile accurate
+```
+
+Profiles:
+- `accurate` -> `config.yaml` + `models/checkpoints/best.pth`
+- `lightweight` -> `config_infer_rpi4.yaml` + `models/checkpoints/efficientnet_b4/best.pth`
+
+Python call example:
+```python
+from portraiq import human_predict
+
+result = human_predict("photos/test13.jpg", profile="accurate")
+# {"image_name": "...", "score": ..., "profile": "...", "deleted": False}
+```
+
+Optional low-score auto-delete:
+```bash
+python3 human_predict_api.py --image ./photos/test13.jpg --profile accurate --delete_below 6.0
+```
 
 ### Training Data Troubleshooting (`total: 0`)
 

@@ -2,10 +2,16 @@ from pathlib import Path
 from typing import Dict
 
 import torch
+import torch.nn as nn
 
-from inference.visualize import draw_scoring_overlay
-from models.modeling import build_composition_model
-from utils.image_utils import build_model_transform, load_pil_rgb
+try:
+    from .visualize import draw_scoring_overlay
+    from ..models.modeling import build_composition_model
+    from ..utils.image_utils import build_model_transform, load_pil_rgb
+except ImportError:  # pragma: no cover - script execution fallback
+    from inference.visualize import draw_scoring_overlay
+    from models.modeling import build_composition_model
+    from utils.image_utils import build_model_transform, load_pil_rgb
 
 
 class InferenceEngine:
@@ -41,8 +47,36 @@ class InferenceEngine:
     def _load_checkpoint(self, checkpoint_path: str):
         payload = torch.load(checkpoint_path, map_location=self.device)
         state_dict = payload.get("model", payload)
+        self._maybe_adapt_scorer_head(state_dict)
         self.model.load_state_dict(state_dict)
         self.model.eval()
+
+    def _maybe_adapt_scorer_head(self, state_dict: Dict[str, torch.Tensor]) -> None:
+        """Support legacy checkpoints that used a smaller 2-layer scorer head."""
+        w0 = state_dict.get("scorer_head.layers.0.weight")
+        w3 = state_dict.get("scorer_head.layers.3.weight")
+        has_legacy_layout = (
+            w0 is not None
+            and w3 is not None
+            and "scorer_head.layers.6.weight" not in state_dict
+            and "scorer_head.layers.9.weight" not in state_dict
+        )
+        if not has_legacy_layout:
+            return
+
+        input_dim = int(w0.shape[1])
+        hidden_dim = int(w0.shape[0])
+        out_dim = int(w3.shape[0])
+        if out_dim != 1:
+            return
+
+        self.model.scorer_head.layers = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(hidden_dim, 1),
+        )
+        self.model.scorer_head.to(self.device)
 
     def _optimize_for_cpu(self, model):
         torch.set_num_threads(max(1, int(self.config.get("inference", {}).get("cpu_threads", 2))))
@@ -83,7 +117,16 @@ class InferenceEngine:
             "overlay": overlay,
         }
 
+    def predict_score(self, image_path: str) -> Dict:
+        """Score-only inference path (no overlay rendering)."""
+        image_pil = load_pil_rgb(Path(image_path))
+        image_tensor = self.transform(image_pil).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            raw_score = self.model(image_tensor)
+            predicted_score = float(torch.clamp(raw_score, 0.0, 10.0).item())
 
-def predict_single_image(image_path: str, config: Dict, checkpoint_path: str):
-    engine = InferenceEngine(config=config, checkpoint_path=checkpoint_path)
-    return engine.predict(image_path)
+        return {
+            "image_path": image_path,
+            "predicted_score": round(predicted_score, 4),
+            "final_score": round(predicted_score, 4),
+        }

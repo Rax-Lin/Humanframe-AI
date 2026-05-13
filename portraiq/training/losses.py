@@ -19,7 +19,7 @@ class SmoothL1WithVariancePenalty(nn.Module):
         variance_loss = torch.relu(
             predictions.new_tensor(self.variance_target) - pred_std
         )
-        return smooth_l1_loss + (self.variance_penalty * variance_loss)
+        return smooth_l1_loss + (self.variance_penalty * variance_loss) # let the model be corrected to identify the larger range of scores
 
 
 def build_loss(name: str = "smooth_l1", variance_penalty: float = 0.0) -> nn.Module:

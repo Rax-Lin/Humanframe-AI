@@ -3,8 +3,12 @@ from typing import Dict, Tuple
 
 import torch.nn as nn
 
-from models.backbone import create_backbone
-from models.scorer import CompositionModel, RegressionHead
+try:
+    from .backbone import create_backbone
+    from .scorer import CompositionModel, RegressionHead
+except ImportError:  # pragma: no cover - script execution fallback
+    from models.backbone import create_backbone
+    from models.scorer import CompositionModel, RegressionHead
 
 
 def build_composition_model(config: Dict) -> Tuple[nn.Module, Dict[str, int]]:

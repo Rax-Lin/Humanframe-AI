@@ -1,8 +1,0 @@
-model:
-  backbone: clip_vit_l14
-  pretrained: true
-  backbone_lr_scale: 0.1
-
-scorer:
-  hidden_dim: 256
-  dropout: 0.3
