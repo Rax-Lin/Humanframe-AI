@@ -228,7 +228,7 @@ python3 main_infer.py \
 
 Install packages:
 ```bash
-cd /home/pi/Humanframe-AI/portraiq
+cd Humanframe-AI/portraiq
 sudo apt update
 sudo apt install -y python3-venv python3-full
 python3 -m venv .venv
@@ -244,7 +244,7 @@ python -m pip install --no-cache-dir -r requirements_infer_rpi4.txt
 
 Inference:
 ```bash
-cd /home/pi/Humanframe-AI/portraiq
+cd Humanframe-AI/portraiq
 source .venv/bin/activate
 python3 main_infer.py \
   --config config_infer_rpi4.yaml \
