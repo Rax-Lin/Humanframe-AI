@@ -20,7 +20,12 @@ class CompositionDataset(Dataset):
     def __getitem__(self, index: int):
         record = self.records[index]
         image_path = self.image_root / record["filename"]
-        image = Image.open(image_path).convert("RGB")
+        with Image.open(image_path) as pil:
+            # Avoid PIL palette-transparency warning by converting P+transparency
+            # images to RGBA before RGB.
+            if pil.mode == "P" and "transparency" in pil.info:
+                pil = pil.convert("RGBA")
+            image = pil.convert("RGB")
         if self.transform is not None:
             image = self.transform(image)
         return {

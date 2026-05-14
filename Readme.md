@@ -4,6 +4,9 @@ A deep learning system that scores the overall aesthetic quality of portrait pho
 
 Implementation in this repo now lives under `portraiq/` and is scaffolded with runnable training/inference entry points.
 
+> **Note**
+> This project is trained using AVA-based scoring, general portrait images as **Good/Acceptable**, and more professional photography as **Excellent**. Model outputs are for reference only and do not represent an absolute aesthetic judgment.
+
 ---
 
 ## Overview
@@ -44,7 +47,7 @@ portraiq/
 │   │   ├── level3_good/             # AVA score 7.5–9.0
 │   │   └── level4_excellent/        # Pexels + Unsplash portraits for excellent class
 │   ├── annotations/                 # Per-image score labels (includes level3_ffhq.json, level4_excellent.json, level4_smugmug.json)
-│   ├── splits/                      # train / val / test index files
+│   │                                # train/val/test split is stored per record in annotation JSON
 │   └── README.md                    # Data collection/filtering/annotation guide
 │
 ├── models/                          # Model definitions & weights (shared by both pipelines)
@@ -117,12 +120,10 @@ All CUDA configuration is centralized in `utils/gpu_config.py`. The current work
 
 | Option | Parameters | Checkpoint Size | Input Size | Notes |
 |--------|------------|-----------------|------------|-------|
-| MobileNetV3-Large | ~5M | ~44MB | 224×224 | Previous lightweight baseline |
-| EfficientNet-B2 | ~9M | ~80MB | 260×260 | Intermediate option |
-| **EfficientNet-B4** | **~19M** | **~176MB** | **380×380** | **Recommended Pi deployment profile (target <200MB)** |
-| CLIP ViT-L/14 | ~307M | ~1.1GB | 224×224 | High-accuracy workstation model |
+| **EfficientNet-B4** | **~19M** | **~221MB (current run)** | **224×224** | **Lightweight deployment profile** |
+| CLIP ViT-L/14 | ~307M | ~3.48GB (current run) | 224×224 | High-accuracy workstation model |
 
-The recommended approach is to use a **pretrained CLIP visual encoder** as the backbone. On the current RTX 4070 SUPER setup, start with ViT-B/32 for faster iteration and move to ViT-L/14 for final accuracy (with smaller batches or gradient accumulation). ViT-L/14 produces richer spatial feature representations that better capture global portrait aesthetics. Only the scoring head is trained from scratch; the backbone is fine-tuned with a low learning rate.
+The current codebase uses two backbone profiles: **EfficientNet-B4** (deployment/lightweight path) and **CLIP ViT-L/14** (high-accuracy path). ViT-L/14 produces richer global features for aesthetics, while EfficientNet-B4 keeps runtime and model size lower for edge deployment.
 
 ### Scoring Head — Regression
 
@@ -137,7 +138,7 @@ Backbone Features → Linear(D, 512) → ReLU → Dropout(0.3)
 
 `D` depends on backbone (`clip_vit_l14=768`, `efficientnet_b4=1792`) and is selected automatically in `models/backbone/factory.py`. Output is a single float in [0.0, 10.0].
 
-For Raspberry Pi deployment, the EfficientNet-B4 profile uses `380×380` input resolution and targets approximately **176MB** checkpoints (kept under **200MB**) for improved accuracy while remaining deployable on Pi 4.
+For Raspberry Pi deployment, the EfficientNet-B4 profile currently uses `224×224` input resolution with checkpoint size around **221MB** in this workspace.
 
 ### Training Strategy
 
@@ -187,39 +188,16 @@ This includes AVA two-stage collection, FFHQ/Level-4 source collection, annotati
 
 ## Environment & Requirements
 
-### Hardware
+Use these two platform flows only:
 
-- **GPU:** 1× NVIDIA GeForce RTX 4070 SUPER (12 GB VRAM)
-- **CUDA:** 12.9
-- **Driver:** 575.64
-- **Multi-GPU:** single-GPU by default; keep `multi_gpu: false` unless hardware changes
-- **RAM:** 32 GB minimum recommended (64 GB+ for large dataset caching)
+### RTX 4070 (Training + Inference)
 
-### Dependencies
-
-Two separate requirements files keep the execution environment lean:
-
-### Deployment Targets
-
-1. **RTX 4070 SUPER workstation (Training + Inference):** current development target for training and inference.
-2. **Raspberry Pi 4 (Inference only):** run inference in a dedicated Python virtual environment (`venv`) to avoid system Python package conflicts (PEP 668).
-
-### Local RTX 4070 Workflow (Recommended)
-
-Project root:
+Install packages:
 ```bash
-cd ~/emb_project/Humanframe-AI
-```
-
-Create and activate a virtual environment:
-```bash
+cd ~/Humanframe-AI
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-```
-
-Install training dependencies (CUDA-enabled PyTorch, compatible versions):
-```bash
 python -m pip install --no-cache-dir numpy==1.26.4
 python -m pip install --no-cache-dir \
   torch==2.2.2+cu121 torchvision==0.17.2+cu121 torchaudio==2.2.2+cu121 \
@@ -229,128 +207,26 @@ python -m pip install -r portraiq/requirements_train.txt
 python -m pip install datasets
 ```
 
-Verify CUDA is available:
+Training:
 ```bash
-python - << 'PY'
-import torch
-print("torch:", torch.__version__)
-print("cuda available:", torch.cuda.is_available())
-print("device count:", torch.cuda.device_count())
-if torch.cuda.is_available():
-    print("device 0:", torch.cuda.get_device_name(0))
-PY
-```
-
-Dataset collection commands (AVA/FFHQ/Level-4 sources) are documented in:
-`portraiq/data/README.md`
-
-Install the dependency set based on your target:
-
-- Training environment:
-```bash
-python -m pip install -r portraiq/requirements_train.txt
-```
-- CPU-friendly inference:
-```bash
-python -m pip install -r portraiq/requirements_infer.txt
-```
-- Full inference (YOLO + CLIP):
-```bash
-python -m pip install -r portraiq/requirements_infer_full.txt
-```
-- Raspberry Pi helper dependencies:
-```bash
-python -m pip install -r portraiq/requirements_infer_rpi4.txt
-```
-
-Raspberry Pi note:
-- On Raspberry Pi OS, do not install into system Python directly.
-- Create/activate a project venv first, then install requirements inside that venv.
-- For stable Pi inference, install `torch`/`torchvision` first with pinned versions, then install `requirements_infer_rpi4.txt`.
-- Avoid installing `requirements_infer.txt` directly on Pi when you need deterministic setup; it may resolve different wheels depending on mirror/state.
-
----
-
-## Quick Start
-
-Training commands below assume local workstation execution with `.venv` activated.
-
-### ▶ Training Pipeline (`main_train.py`)
-
-Before training, verify dataset visibility and split counts:
-```bash
-cd ~/emb_project/Humanframe-AI/portraiq
-source ../.venv/bin/activate
-ls -lah data/annotations
-python - << 'PY'
-from training.dataset import load_annotation_records, split_records
-from pathlib import Path
-r = load_annotation_records(Path("data/annotations"))
-tr, va, te = split_records(r, 0.8, 0.1, 0.1, 42)
-print("total:", len(r), "train:", len(tr), "val:", len(va), "test:", len(te))
-PY
-```
-
-Expected: `train > 0`. If `total: 0`, training will fail because no labels were loaded.
-Current loader behavior: non-training JSON files like `ava_raw_download.json` and `ava_skipped_errors.json` are skipped automatically.
-
-Train the model and save checkpoints to `models/checkpoints/`:
-
-```bash
-cd ~/emb_project/Humanframe-AI/portraiq
+cd ~/Humanframe-AI/portraiq
 source ../.venv/bin/activate
 python main_train.py --config config.yaml
 ```
 
-Train a Raspberry Pi-friendly checkpoint (EfficientNet-B4 backbone):
+Inference:
 ```bash
-cd ~/emb_project/Humanframe-AI/portraiq
+cd ~/Humanframe-AI/portraiq
 source ../.venv/bin/activate
-python main_train.py --config config_train_mobilenet.yaml
+python3 main_infer.py \
+  --config config.yaml \
+  --image path/to/photo.jpg \
+  --checkpoint models/checkpoints/best.pth
 ```
 
-Resume from a checkpoint:
-```bash
-cd ~/emb_project/Humanframe-AI/portraiq
-source ../.venv/bin/activate
-python main_train.py --config config.yaml --resume models/checkpoints/last.pth
-```
+### Raspberry Pi 4 (Inference)
 
-Run evaluation on the test set:
-```bash
-cd ~/emb_project/Humanframe-AI/portraiq
-source ../.venv/bin/activate
-python main_train.py --config config.yaml --mode evaluate --checkpoint models/checkpoints/best.pth
-```
-
-### TensorBoard Monitoring
-
-Launch TensorBoard on the workstation:
-```bash
-cd ~/emb_project/Humanframe-AI/portraiq
-tensorboard --logdir=runs/ --host=0.0.0.0 --port=6006
-```
-
-Open in your local browser:
-```text
-http://<workstation-ip>:6006
-```
-
-### ▶ Execution Pipeline (`main_infer.py`)
-
-RTX 4070 SUPER workstation (single-image inference):
-```bash
-cd ~/emb_project/Humanframe-AI/portraiq
-python3 main_infer.py --image path/to/photo.jpg --checkpoint models/checkpoints/best.pth
-```
-
-RTX 4070 SUPER workstation (batch inference):
-```bash
-cd ~/emb_project/Humanframe-AI/portraiq
-python3 main_infer.py --input_dir ./photos/ --output_dir ./results/ --checkpoint models/checkpoints/best.pth
-```
-
-Raspberry Pi 4 CPU mode (venv-based, no container):
+Install packages:
 ```bash
 cd /home/pi/Humanframe-AI/portraiq
 sudo apt update
@@ -359,87 +235,40 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m ensurepip --upgrade
 python -m pip install --upgrade pip setuptools wheel
-# Install Pi-compatible core runtime first
 python -m pip install --no-cache-dir \
   --extra-index-url https://www.piwheels.org/simple \
   torch==2.2.2 torchvision==0.17.2
 python -m pip install --no-cache-dir numpy==1.26.4
-
-# Install remaining inference deps (PyYAML, Pillow, tqdm, etc.)
 python -m pip install --no-cache-dir -r requirements_infer_rpi4.txt
-
-# Optional sanity check
-python - << 'PY'
-import numpy, torch, torchvision
-print("numpy", numpy.__version__)
-print("torch", torch.__version__)
-print("torchvision", torchvision.__version__)
-PY
-
-python main_infer.py \
-  --config config_infer_rpi4.yaml \
-  --image path/to/photo.jpg \
-  --checkpoint models/checkpoints/efficientnet_b4/best.pth \
-  --no_overlay
 ```
 
-If `pip` in the venv reports resolver/import errors (for example `InconsistentCandidate`), rebuild the venv:
+Inference:
 ```bash
 cd /home/pi/Humanframe-AI/portraiq
-deactivate 2>/dev/null || true
-rm -rf .venv
-python3 -m venv .venv
 source .venv/bin/activate
-python -m ensurepip --upgrade
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install --no-cache-dir \
-  --extra-index-url https://www.piwheels.org/simple \
-  torch==2.2.2 torchvision==0.17.2
-python -m pip install --no-cache-dir numpy==1.26.4
-python -m pip install --no-cache-dir -r requirements_infer_rpi4.txt
-```
-
-If your runtime supports quantization backend correctly, you can add `--cpu_optimized` for inference:
-```bash
-python main_infer.py \
+python3 main_infer.py \
   --config config_infer_rpi4.yaml \
   --image path/to/photo.jpg \
   --checkpoint models/checkpoints/efficientnet_b4/best.pth \
-  --cpu_optimized \
   --no_overlay
 ```
-Expected CPU latency on Raspberry Pi 4 with EfficientNet-B4 is approximately **2–5 seconds per image** (depends on SD card, thermal throttling, and background load).
 
-### Simple API-style Inference (`human_predict_api.py`)
-
-For integration workflows (for example, receiving photos over SSH and returning only score + image name), use:
-
+Optional API-style inference on GPU:
 ```bash
-cd ~/emb_project/Humanframe-AI/portraiq
+cd Humanframe-AI/portraiq
 source ../.venv/bin/activate
 python3 human_predict_api.py --image ./photos/test13.jpg --profile accurate
 ```
 
-Profiles:
-- `accurate` -> `config.yaml` + `models/checkpoints/best.pth`
-- `lightweight` -> `config_infer_rpi4.yaml` + `models/checkpoints/efficientnet_b4/best.pth`
-
-Python call example:
-```python
-from portraiq import human_predict
-
-result = human_predict("photos/test13.jpg", profile="accurate")
-# {"image_name": "...", "score": ..., "profile": "...", "deleted": False}
-```
-
-Optional low-score auto-delete:
+Optional API-style inference on CPU (Raspberry Pi):
 ```bash
-python3 human_predict_api.py --image ./photos/test13.jpg --profile accurate --delete_below 6.0
+cd Humanframe-AI/portraiq
+source .venv/bin/activate
+python3 human_predict_api.py --image ./photos/test13.jpg --profile lightweight
 ```
 
-### Training Data Troubleshooting (`total: 0`)
-
-See `portraiq/data/README.md` for dataset/annotation troubleshooting steps.
+Dataset collection instructions are documented in:
+`portraiq/data/README.md`
 
 ---
 
@@ -452,23 +281,6 @@ Use the provided config files directly instead of copying settings from README:
 - `portraiq/config_infer_rpi4.yaml` (Raspberry Pi inference profile)
 
 If you need custom hyperparameters, duplicate one of the YAML files and pass it with `--config`.
-
----
-
-## Roadmap
-
-- [x] Project structure design
-- [x] Initial project scaffold and module implementation (`portraiq/`)
-- [ ] Dataset collection & annotation pipeline
-- [x] Person detection integration (`pose_utils.py`, YOLO + fallback)
-- [x] Backbone integration (EfficientNet / CLIP)
-- [x] Pure AI scoring pipeline (rule-based scoring removed from train/val/infer)
-- [x] Baseline training pipeline with multi-GPU support (`DataParallel`)
-- [x] Baseline evaluation metrics (MAE, RMSE)
-- [x] Inference CLI & visualization output
-- [x] Stronger experiment tracking / logging (TensorBoard wiring)
-- [ ] Collect additional high-quality portrait dataset beyond current Level 4 sources (Pexels + Unsplash) to improve Excellent-range accuracy
-- [ ] Web demo (optional)
 
 ---
 

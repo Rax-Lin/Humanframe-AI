@@ -132,3 +132,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# using image path to use the api call correctly

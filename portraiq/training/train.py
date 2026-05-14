@@ -232,7 +232,7 @@ def run_training(config: Dict, resume: Optional[str] = None) -> Dict[str, float]
                 )
                 backbone_unfrozen_logged = True
 
-        model.train()
+        model.train() # training mode of Pytorch modules
         running_loss = 0.0
 
         progress = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs}")
@@ -353,7 +353,7 @@ def run_evaluation(config: Dict, checkpoint: str) -> Dict[str, float]:
 
 
 def _prepare_model_and_device(config: Dict):
-    device_cfg = config.get("gpu", {})
+    device_cfg = config.get("gpu", {}) # the config should have a "gpu" section
     use_cuda = device_cfg.get("device", "cuda") == "cuda" and torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
 

@@ -42,7 +42,7 @@ AVA is the primary source because it provides large-scale human aesthetic prefer
 Run in project root:
 
 ```bash
-cd ~/emb_project/Humanframe-AI
+cd ~/Humanframe-AI
 source .venv/bin/activate
 ```
 
@@ -94,7 +94,7 @@ python3 data_collect/ava_download.py \
 ## Level 3 Collection (FFHQ)
 
 ```bash
-cd ~/emb_project/Humanframe-AI
+cd ~/Humanframe-AI
 source .venv/bin/activate
 python3 data_collect/ffhq_download.py \
   --max_images 70000 \
