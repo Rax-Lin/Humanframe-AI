@@ -228,23 +228,23 @@ Inference:
 ```bash
 cd ~/Humanframe-AI/portraiq
 source ../.venv/bin/activate
-python3 main_infer.py \
-  --config config.yaml \
-  --image path/to/photo.jpg \
-  --checkpoint models/best.pth
+python3 main_infer.py --config config.yaml --image path/to/photo.jpg --checkpoint models/best.pth
 ```
 
 ### Raspberry Pi 4 (Inference)
 
 Install packages:
 ```bash
-cd Humanframe-AI/portraiq
+cd /home/pi/Humanframe-AI/portraiq
 sudo apt update
 sudo apt install -y python3-venv python3-full
+
+# Rebuild a clean venv (prevents pip corruption issues such as
+# "ValueError: bad marshal data (unknown type code)")
+rm -rf .venv
 python3 -m venv .venv
 source .venv/bin/activate
-python -m ensurepip --upgrade
-python -m pip install --upgrade pip setuptools wheel
+python -m pip install --upgrade --force-reinstall pip setuptools wheel
 python -m pip install --no-cache-dir \
   --extra-index-url https://www.piwheels.org/simple \
   torch==2.2.2 torchvision==0.17.2
@@ -254,25 +254,21 @@ python -m pip install --no-cache-dir -r requirements_infer_rpi4.txt
 
 Inference:
 ```bash
-cd Humanframe-AI/portraiq
+cd ~/Humanframe-AI/portraiq
 source .venv/bin/activate
-python3 main_infer.py \
-  --config config_infer_rpi4.yaml \
-  --image path/to/photo.jpg \
-  --checkpoint models/best_lite.pth \
-  --no_overlay
+python3 main_infer.py --config config_infer_rpi4.yaml --image path/to/photo.jpg --checkpoint models/best_lite.pth --no_overlay
 ```
 
 Optional API-style inference on GPU:
 ```bash
-cd Humanframe-AI/portraiq
+cd ~/Humanframe-AI/portraiq
 source ../.venv/bin/activate
 python3 human_predict_api.py --image ./photos/test13.jpg --profile accurate
 ```
 
 Optional API-style inference on CPU (Raspberry Pi):
 ```bash
-cd Humanframe-AI/portraiq
+cd /home/pi/Humanframe-AI/portraiq
 source .venv/bin/activate
 python3 human_predict_api.py --image ./photos/test13.jpg --profile lightweight
 ```
