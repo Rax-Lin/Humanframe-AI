@@ -200,7 +200,9 @@ def run_training(config: Dict, resume: Optional[str] = None) -> Dict[str, float]
         logger.info("Resumed from %s at epoch %d", resume, start_epoch)
 
     epochs = int(config["training"]["epochs"])
-    checkpoint_dir = Path(config["training"].get("checkpoint_dir", "models/checkpoints"))
+    checkpoint_dir = Path(config["training"].get("checkpoint_dir", "models"))
+    last_ckpt_name = str(config["training"].get("last_checkpoint_name", "last.pth"))
+    best_ckpt_name = str(config["training"].get("best_checkpoint_name", "best.pth"))
 
     # Two-phase schedule:
     # Phase 1: freeze backbone for first `freeze_epochs` epochs.
@@ -282,7 +284,7 @@ def run_training(config: Dict, resume: Optional[str] = None) -> Dict[str, float]
         )
 
         _save_checkpoint(
-            checkpoint_dir / "last.pth",
+            checkpoint_dir / last_ckpt_name,
             model,
             optimizer,
             epoch,
@@ -298,7 +300,7 @@ def run_training(config: Dict, resume: Optional[str] = None) -> Dict[str, float]
             best_epoch = epoch + 1
             no_improve_epochs = 0
             _save_checkpoint(
-                checkpoint_dir / "best.pth",
+                checkpoint_dir / best_ckpt_name,
                 model,
                 optimizer,
                 epoch,

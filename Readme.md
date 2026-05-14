@@ -53,7 +53,8 @@ portraiq/
 ├── models/                          # Model definitions & weights (shared by both pipelines)
 │   ├── backbone/                    # Feature extractor (CLIP ViT-L/14)
 │   ├── scorer/                      # Regression scoring head (outputs 0.0–10.0)
-│   ├── checkpoints/                 # Saved .pth weight files — bridge between train & infer
+│   ├── best.pth                     # Accurate model checkpoint (CLIP profile)
+│   ├── best_lite.pth                # Lightweight model checkpoint (EfficientNet-B4 profile)
 │   └── configs/                     # YAML hyperparameter files per experiment
 │
 ├── training/                        # ── TRAINING PIPELINE (standalone) ──
@@ -85,7 +86,7 @@ portraiq/
 └── README.md
 ```
 
-Repository root also includes `.gitignore` to exclude datasets, checkpoints, cache files, and local runtime outputs from GitHub.
+Repository root also includes `.gitignore` to exclude datasets, model artifacts, cache files, and local runtime outputs from GitHub.
 
 ### Two Independent Entry Points
 
@@ -94,7 +95,7 @@ Repository root also includes `.gitignore` to exclude datasets, checkpoints, cac
 | `main_train.py` | Train the model, output `.pth` checkpoints | `requirements_train.txt` |
 | `main_infer.py` | Score new portrait images using saved weights | `requirements_infer.txt` (CPU-friendly) |
 
-The **only connection** between the two pipelines is `models/checkpoints/` — the trained `.pth` weight files. The execution environment does not need any training dependencies installed.
+The **only connection** between the two pipelines is the trained `.pth` files under `models/` (for example `models/best.pth` and `models/best_lite.pth`). The execution environment does not need any training dependencies installed.
 
 ---
 
@@ -190,6 +191,15 @@ This includes AVA two-stage collection, FFHQ/Level-4 source collection, annotati
 
 Use these two platform flows only:
 
+### Shared Model File Placement (RTX 4070 + Raspberry Pi 4)
+
+Place model files in the same location for both platforms:
+
+```text
+portraiq/models/best.pth        # accurate model (CLIP)
+portraiq/models/best_lite.pth   # lightweight model (EfficientNet-B4)
+```
+
 ### RTX 4070 (Training + Inference)
 
 Install packages:
@@ -221,7 +231,7 @@ source ../.venv/bin/activate
 python3 main_infer.py \
   --config config.yaml \
   --image path/to/photo.jpg \
-  --checkpoint models/checkpoints/best.pth
+  --checkpoint models/best.pth
 ```
 
 ### Raspberry Pi 4 (Inference)
@@ -249,7 +259,7 @@ source .venv/bin/activate
 python3 main_infer.py \
   --config config_infer_rpi4.yaml \
   --image path/to/photo.jpg \
-  --checkpoint models/checkpoints/efficientnet_b4/best.pth \
+  --checkpoint models/best_lite.pth \
   --no_overlay
 ```
 
@@ -266,6 +276,10 @@ cd Humanframe-AI/portraiq
 source .venv/bin/activate
 python3 human_predict_api.py --image ./photos/test13.jpg --profile lightweight
 ```
+
+API profile defaults:
+- `accurate` -> `models/best.pth`
+- `lightweight` -> `models/best_lite.pth`
 
 Dataset collection instructions are documented in:
 `portraiq/data/README.md`

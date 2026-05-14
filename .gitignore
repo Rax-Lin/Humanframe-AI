@@ -26,9 +26,11 @@ portraiq/tb_logs/
 logs/*
 !logs/.gitkeep
 
+# Local Hugging Face upload workdirs (nested repos)
+hf_model_upload/
+hf_model_upload_lite/
+
 # Model artifacts
-portraiq/models/checkpoints/*
-!portraiq/models/checkpoints/.gitkeep
 *.pth
 *.pt
 *.onnx

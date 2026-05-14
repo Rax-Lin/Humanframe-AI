@@ -20,7 +20,9 @@ training:
   early_stopping_patience: 7
   loss: smooth_l1
   variance_penalty: 0.1
-  checkpoint_dir: models/checkpoints/efficientnet_b4/
+  checkpoint_dir: models
+  best_checkpoint_name: best_lite.pth
+  last_checkpoint_name: last_lite.pth
 
 data:
   image_size: 224

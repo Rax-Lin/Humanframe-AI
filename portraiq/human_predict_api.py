@@ -15,12 +15,12 @@ except ImportError:  # pragma: no cover - script execution fallback
 PROFILE_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "accurate": {
         "config": "config.yaml",
-        "checkpoint": "models/checkpoints/best.pth",
+        "checkpoint": "models/best.pth",
         "cpu_optimized": False,
     },
     "lightweight": {
         "config": "config_infer_rpi4.yaml",
-        "checkpoint": "models/checkpoints/efficientnet_b4/best.pth",
+        "checkpoint": "models/best_lite.pth",
         "cpu_optimized": True,
     },
 }
