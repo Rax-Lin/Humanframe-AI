@@ -250,6 +250,10 @@ python -m pip install --no-cache-dir \
   torch==2.2.2 torchvision==0.17.2
 python -m pip install --no-cache-dir numpy==1.26.4
 python -m pip install --no-cache-dir -r requirements_infer_rpi4.txt
+
+# If pinned torch/torchvision installation fails, fallback:
+pip install torchvision
+pip install torch
 ```
 
 Inference:
