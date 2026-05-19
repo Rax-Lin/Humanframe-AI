@@ -200,6 +200,10 @@ portraiq/models/best.pth        # accurate model (CLIP)
 portraiq/models/best_lite.pth   # lightweight model (EfficientNet-B4)
 ```
 
+Model download links:
+- Accurate model: https://huggingface.co/Rax1010/Humanframe-AI
+- Lightweight model: https://huggingface.co/Rax1010/Humanframe-AI-lite
+
 ### RTX 4070 (Training + Inference)
 
 Install packages:
